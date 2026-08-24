@@ -129,11 +129,29 @@ creates a new partition file downstream (`open_q.json` alongside
 | `video_summarization` | Summarize events in a video clip. |
 | `tracking_description` | What one tracked object looks like — the sub-task whose `question` references `<track>{track_id}</track>`, and the only place a bare `track_id` is given an appearance. |
 | `grounded_spatial_temporal_description` | Describe the events in a time window, grounded to the objects involved. The question carries a start and an end timestamp, and may scope the request to one track; the answer names each participant as a `<track>` marker. |
+| `event_verification` | Does any suspicious or dangerous activity occur? Answered `Yes`/`No` followed by an explanation. |
+| `gun_verification` | Is a gun present in the clip? Same yes/no-plus-explanation shape. |
+| `safety_verification` | Is there a physical safety event in the clip? Same shape. |
 
 The first ten carry the definitions already documented for the same task
 names in
 [metropolis-v3.0](../../metropolis-v3.0/specs/schema-reference.md#bcq);
 `tracking_description` is defined by this format.
+
+The last three are the **`<domain>_verification` family**: a fixed yes/no
+question asking whether one condition holds in the clip, answered `Yes` or
+`No` followed by an explanation, and carrying `reasoning`. Across 10,771
+production sub-tasks each family member used exactly one question:
+
+| Value | Question |
+|---|---|
+| `event_verification` | *Do you see any suspicious or dangerous activity?* |
+| `gun_verification` | *Is there a gun detected in the video?* |
+| `safety_verification` | *Is there a physical safety event in this video?* |
+
+The family is open — a new detector domain adds a new member. New members
+belong in this list rather than being matched by a `*_verification` pattern,
+so that a misspelling like `gun_verifcation` is still reported.
 
 `grounded_spatial_temporal_description` has no definition upstream — the
 issue introducing this format names it in the documented list but never says

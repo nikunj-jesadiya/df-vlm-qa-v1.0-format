@@ -39,6 +39,13 @@ TASK_TYPES = frozenset(
         "video_summarization",
         "tracking_description",
         "grounded_spatial_temporal_description",
+        # The `<domain>_verification` family: a fixed yes/no question asking
+        # whether one condition holds in the clip. Open-ended by nature — a new
+        # detector domain adds a new member, which belongs here so a typo is
+        # still caught.
+        "event_verification",
+        "gun_verification",
+        "safety_verification",
     }
 )
 

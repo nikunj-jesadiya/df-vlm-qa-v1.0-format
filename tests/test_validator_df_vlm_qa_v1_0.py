@@ -421,6 +421,36 @@ class TestTextConventions:
         result = _validate(_batch(tmp_path, doc))
         assert _has(result.warnings, "outside the documented set")
 
+    @pytest.mark.parametrize(
+        "task_type",
+        ["event_verification", "gun_verification", "safety_verification"],
+    )
+    def test_verification_family_is_documented(self, tmp_path, task_type):
+        """The `<domain>_verification` family is in the documented set.
+
+        `event_verification` alone accounts for 9,585 sub-tasks across the
+        production batches; `gun_verification` and `safety_verification` 593
+        each. All three are a fixed yes/no question about one condition.
+        """
+        doc = _doc()
+        doc["sub_tasks"].append(
+            {
+                "task_type": task_type,
+                "question": "Do you see any suspicious or dangerous activity?",
+                "answer": "No. Routine activity only.",
+                "reasoning": "Nothing in the clip departs from normal behaviour.",
+            }
+        )
+        result = _validate(_batch(tmp_path, doc))
+        assert not _has(result.warnings, "outside the documented set")
+
+    def test_verification_typo_still_caught(self, tmp_path):
+        """Enumerating the family rather than pattern-matching is the point."""
+        doc = _doc()
+        doc["sub_tasks"][0]["task_type"] = "gun_verifcation"
+        result = _validate(_batch(tmp_path, doc))
+        assert _has(result.warnings, "outside the documented set")
+
 
 # ---------------------------------------------------------------------------
 # Media

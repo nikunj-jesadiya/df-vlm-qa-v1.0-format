@@ -12,6 +12,7 @@ in-text timestamp conventions, and media agreement.
 
 import argparse
 import hashlib
+from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar, List, Optional, Set, Tuple
 
@@ -305,7 +306,8 @@ class DfVlmQaV1_0Validator(BaseValidator):
                 f"grid: {shown}{more}"
             )
 
-        duplicates = sorted({t for t in times if times.count(t) > 1})
+        counts = Counter(times)
+        duplicates = sorted(t for t, n in counts.items() if n > 1)
         if duplicates:
             shown = ", ".join(str(t) for t in duplicates[:5])
             result.add_error(
@@ -383,7 +385,7 @@ class DfVlmQaV1_0Validator(BaseValidator):
         tracks = doc.get("tracking", [])
         track_ids = [t["track_id"] for t in tracks]
 
-        duplicates = sorted({t for t in track_ids if track_ids.count(t) > 1})
+        duplicates = sorted(t for t, n in Counter(track_ids).items() if n > 1)
         if duplicates:
             result.add_error(
                 f"{name}: track_id is not unique within the clip: {', '.join(duplicates)}"
@@ -510,7 +512,7 @@ class DfVlmQaV1_0Validator(BaseValidator):
             if not TIMESTAMP_CANONICAL.match(token):
                 result.add_warning(
                     f"{where} has non-canonical timestamp {token!r}; expected a seconds "
-                    "value with at most two decimals and an 's' suffix (e.g. '7.50s')"
+                    "value with at most three decimals and an 's' suffix (e.g. '7.50s')"
                 )
         for match in TIMESTAMP_COLON.finditer(text):
             result.add_warning(
