@@ -36,7 +36,7 @@ See also: [validators](../validators/README.md) · [converters](../converters/RE
 ## validate
 
 ```
-tao-daft validate {metropolis-v3.0|cosmos-reason-v1.0|tao-vl-reason-v1.0}
+tao-daft validate {metropolis-v3.0|cosmos-reason-v1.0|tao-vl-reason-v1.0|df-vlm-qa-v1.0}
                   --path PATH
                   [--strict]
                   [format-specific options...]
@@ -81,6 +81,19 @@ file (`*.json` with `format: "tao-vl-reason-v1.0"`) and verifies every
 referenced `video_id` / `image_id` resolves under each annotation's
 `media_root`.
 
+### `df-vlm-qa-v1.0` options
+
+Only the common options apply. The validator schema-checks every per-clip
+document (`*.json` with `format: "df-vlm-qa-v1.0"`), then applies the checks
+JSON Schema cannot express: every `tracking` row lands on the annotation grid
+`tracking_meta` declares, box corner order and bounds, `<track>` marker
+resolution, in-text timestamp conventions, `<SKIP>` placement, and media
+agreement (`video_id`, `video_sha256`, duration, `video_url`).
+
+Checks needing the media file are skipped with a warning when it is not
+reachable. `--strict` promotes an unresolvable `video_id` from a warning to an
+error, in addition to failing the run on any warning.
+
 ### Examples
 
 ```bash
@@ -97,6 +110,9 @@ tao-daft validate cosmos-reason-v1.0 --path examples/datasets/cosmos-reason-v1.0
 
 # tao-vl-reason-v1.0 dataset
 tao-daft validate tao-vl-reason-v1.0 --path examples/datasets/tao-vl-reason-v1.0/its_collision
+
+# df-vlm-qa-v1.0 batch
+tao-daft validate df-vlm-qa-v1.0 --path <batch>/
 ```
 
 ---

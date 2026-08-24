@@ -35,12 +35,14 @@ class TestImports:
         from nvidia_tao_daft.validators.cosmos_reason_v1_0 import (
             CosmosReasonV1_0Validator,
         )
+        from nvidia_tao_daft.validators.df_vlm_qa_v1_0 import DfVlmQaV1_0Validator
         from nvidia_tao_daft.validators.metropolis_v3_0 import MetropolisV3_0Validator
         from nvidia_tao_daft.validators.tao_vl_reason_v1_0 import TaoVlReasonV1_0Validator
 
         assert MetropolisV3_0Validator is not None
         assert CosmosReasonV1_0Validator is not None
         assert TaoVlReasonV1_0Validator is not None
+        assert DfVlmQaV1_0Validator is not None
         assert RawType is not None
         assert ValidationResult is not None
         assert FormatError is not None
