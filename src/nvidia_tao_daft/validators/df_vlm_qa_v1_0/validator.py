@@ -32,6 +32,7 @@ from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import (
     grid_times,
     is_document,
     is_skipped,
+    jsons_videos_layout_warning,
     on_grid,
     probe_duration_s,
     resolve_media_path,
@@ -178,16 +179,25 @@ class DfVlmQaV1_0Validator(BaseValidator):
     ) -> ValidationResult:
         """Validate every df-vlm-qa-v1.0 document in the batch at *dataset_path*.
 
-        ``permissive`` softens the ``video_id`` resolution check from an error
-        to a warning; every other level is fixed. The returned result carries an
-        extra ``skipped_sub_tasks`` attribute — the count of ``<SKIP>``ped
-        sub-tasks across the batch, reported for visibility rather than as a
-        finding.
+        ``permissive`` (the default) skips the expensive, per-file media
+        checks — ``video_sha256`` and duration, a hash and an ``ffprobe``
+        each — so a large batch validates quickly day to day.
+        ``permissive=False`` (``--strict``) runs them. Either way, local
+        media *reachability* (``video_id`` resolution) is checked and is
+        always a warning, never an error — see ``_validate_media``. The
+        returned result carries an extra ``skipped_sub_tasks`` attribute —
+        the count of ``<SKIP>``ped sub-tasks across the batch, reported for
+        visibility rather than as a finding.
         """
         result = ValidationResult()
         result.skipped_sub_tasks = 0
 
         print(f"Validating batch: {dataset_path.name} (format: {self.format})")
+
+        print("  Checking batch layout...")
+        layout_warning = jsons_videos_layout_warning(dataset_path)
+        if layout_warning is not None:
+            result.add_warning(layout_warning)
 
         print("  Validating schemas...")
         documents = self._validate_schemas(dataset_path, result)
@@ -205,9 +215,11 @@ class DfVlmQaV1_0Validator(BaseValidator):
         for doc_path, doc in documents:
             result.skipped_sub_tasks += self._validate_text(doc_path, doc, result)
 
-        print("  Checking media references...")
+        deep_media = not permissive
+        suffix = "..." if deep_media else " (existence only; pass --strict for byte-level checks)..."
+        print("  Checking media references" + suffix)
         for doc_path, doc in documents:
-            self._validate_media(dataset_path, doc_path, doc, result, permissive=permissive)
+            self._validate_media(dataset_path, doc_path, doc, result, deep=deep_media)
 
         return result
 
@@ -536,13 +548,22 @@ class DfVlmQaV1_0Validator(BaseValidator):
         doc: dict,
         result: ValidationResult,
         *,
-        permissive: bool,
+        deep: bool,
     ) -> None:
-        """Check ``video_url`` syntax and, when the media is reachable, its bytes.
+        """Check ``video_url`` syntax and, when *deep*, the media's bytes.
 
-        ``video_url`` is pure syntax — no bucket access, no network. The
-        remaining checks need the file: when it is not reachable they are
-        skipped with a warning, consistent with the other validators.
+        ``video_url`` is pure syntax — no bucket access, no network. Local
+        media reachability (``video_id`` resolution) is a stat call, so it
+        always runs, and it never fails the batch on its own: a batch
+        validated on a machine that has not checked out the media (or only
+        has it in S3) is not a content problem, so it is always a warning,
+        independent of ``deep``.
+
+        ``video_sha256`` and duration are the expensive checks — a hash and
+        an ``ffprobe`` per clip — so they run only when *deep* is set (i.e.
+        under ``--strict``). Skipping them by default is what keeps a large
+        batch fast to validate day to day; ``--strict`` is when the bytes
+        themselves need confirming, e.g. before a delivery is signed off.
         """
         name = doc_path.name
 
@@ -554,17 +575,16 @@ class DfVlmQaV1_0Validator(BaseValidator):
 
         media = resolve_media_path(dataset_path, doc["video_id"])
         if not media.is_file():
-            message = (
+            result.add_warning(
                 f"{name}: video_id {doc['video_id']!r} does not resolve under the media "
                 f"root ({media})"
             )
-            if permissive:
-                result.add_warning(message)
-            else:
-                result.add_error(message)
             result.add_warning(
                 f"{name}: media not reachable — skipping video_sha256 and duration checks"
             )
+            return
+
+        if not deep:
             return
 
         expected = doc.get("video_sha256")

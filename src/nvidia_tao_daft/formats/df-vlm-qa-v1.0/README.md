@@ -21,8 +21,22 @@ A **batch** is a directory of per-clip documents plus the referenced media.
 └── <clip-stem>.json
 ```
 
+A delivery bundle instead splits documents and media into sibling `jsons/`
+and `videos/` subdirectories — the layout `build_delivery_batch_v2.py`
+produces:
+
+```
+{bundle}/
+├── jsons/
+│   └── <clip-stem>.json           # one document per video clip
+├── videos/
+│   └── [source-subdirs/]<clip>.mp4  # path matches video_id; subdirs optional
+└── manifest.json                  # build artefact, not part of the format
+```
+
 `video_id` is a path relative to a batch media root that the file itself never
-names — see [directory-structure.md](specs/directory-structure.md#media-root).
+names — see [directory-structure.md](specs/directory-structure.md#media-root)
+and [the `jsons/`+`videos/` bundle layout](specs/directory-structure.md#delivery-bundle-jsons--videos).
 
 Each document:
 

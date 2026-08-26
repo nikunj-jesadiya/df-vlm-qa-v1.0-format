@@ -123,14 +123,48 @@ def find_datasets(root: Path) -> List[Path]:
 
 
 def resolve_media_path(batch_path: Path, video_id: str) -> Path:
-    """Resolve *video_id* against the batch root.
+    """Resolve *video_id* against the batch media root.
 
     df-vlm-qa-v1.0 carries no ``media_root`` field — the batch media root is
     supplied out of band. The validator's best available root is the batch
-    directory it was pointed at, which resolves the self-contained case and
-    misses the rest; a miss is reported, not raised.
+    directory it was pointed at, which resolves the self-contained case
+    directly.
+
+    A ``{bundle}/jsons/`` + ``{bundle}/videos/`` bundle is discovered with
+    ``jsons/`` as the batch root (it is the directory holding the documents),
+    so ``video_id`` does not resolve under it. When *batch_path* is named
+    ``jsons`` and a sibling ``videos/`` directory exists, that sibling is
+    tried as the media root as well. Anything else is a miss, reported rather
+    than raised.
     """
-    return batch_path / video_id
+    direct = batch_path / video_id
+    if not direct.exists() and batch_path.name == "jsons":
+        sibling_videos = batch_path.parent / "videos"
+        if sibling_videos.is_dir():
+            return sibling_videos / video_id
+    return direct
+
+
+def jsons_videos_layout_warning(batch_path: Path) -> Optional[str]:
+    """Return a warning message when *batch_path* is a bare ``jsons/`` root.
+
+    Producers such as ``build_delivery_batch_v2.py`` emit
+    ``{bundle}/jsons/*.json`` next to ``{bundle}/videos/...``.
+    ``find_datasets`` discovers ``jsons/`` itself as the batch root, so a
+    missing sibling ``videos/`` directory means every document's
+    ``video_id`` is about to fail to resolve. Surfacing that once up front
+    beats the same diagnosis repeated per file with no obvious common cause.
+    Returns ``None`` when the layout is fine or does not apply.
+    """
+    if batch_path.name != "jsons":
+        return None
+    if (batch_path.parent / "videos").is_dir():
+        return None
+    return (
+        f"batch root {batch_path} is a jsons/ directory with no sibling "
+        "videos/ directory next to it — every document's video_id will fail "
+        "to resolve"
+    )
 
 
 def grid_spacing(tracking_meta: dict) -> float:

@@ -20,6 +20,41 @@ can sit alongside.
 
 Every document has `metadata.type: "annotation"` (the schema discriminator).
 
+## Delivery bundle: `jsons/` + `videos/`
+
+A batch built for hand-off to the correction UI is delivered as a bundle
+with the documents and the media split into two sibling subdirectories,
+plus a build-time `manifest.json` that is not part of the format itself:
+
+```
+{bundle}/
+├── jsons/
+│   ├── <clip-stem>.json
+│   ├── <clip-stem>.json
+│   └── <clip-stem>.json
+├── videos/
+│   └── [source-subdirs/]<clip>.mp4   # path matches video_id; subdirs optional
+└── manifest.json                     # build artefact — index + provenance, not uploaded* as data
+```
+
+\* `manifest.json` and any bundle-level `README.md` stay local; only
+`jsons/` and `videos/` are the payload that reaches the correction UI.
+
+`find_datasets` discovers `jsons/` itself as the batch root — it is the
+directory that directly holds the `*.json` documents. The validator resolves
+each document's `video_id` against that root first (the self-contained,
+single-directory case from the tree at the top of this file) and, when that
+misses and the root is literally named `jsons`, falls back to the sibling
+`videos/` directory next to it. A `jsons/` root with no sibling `videos/` at
+all is flagged once, up front, as a batch-level warning — every document's
+`video_id` would otherwise fail to resolve for the same reason, one file at
+a time.
+
+This is the layout `build_delivery_batch_v2.py` produces (see
+`v2_project/scripts/build_delivery_batch_v2.py`): `--jsons-subdir`/
+`--videos-subdir` default to `jsons`/`videos`, and `video_id` is a path
+relative to the `videos/` root (e.g. `Vaidio/20250605/clips/<clip>.mp4`).
+
 ## Filename convention
 
 The conventional filename is the clip stem, matching the media it describes.
@@ -57,13 +92,16 @@ only that shape.
 
 | Consumer | How it resolves `video_id` |
 |---|---|
-| Validator | Against the batch root — `--path <batch>/` joined to `video_id`. |
+| Validator | Against the batch root — `--path <batch>/` joined to `video_id`; for a `jsons/`+`videos/` bundle, falls back to the sibling `videos/` (see [above](#delivery-bundle-jsons--videos)). |
 | Annotation UI | Not at all; it uses `video_url`, presigned client-side. |
 | Training pipeline | Against an out-of-band media root of its own choosing. |
 
 The validator reports a `video_id` that does not resolve under the media root
-as a **warning in permissive mode and an error in strict mode**, matching the
-existing media check on the other formats.
+as a **warning, always** — unlike the other formats, this never escalates to
+an error under `--strict`. Local media reachability depends on where the
+validator happens to be run (a checkout with only the JSON side pulled down,
+or media that lives only in S3) rather than on the content being validated,
+so it cannot fail the batch on its own.
 
 ## `video_id` vs `video_url`
 
@@ -104,6 +142,12 @@ DAFT is the ingest point that can, and the check runs at validation.
 Checks that need the media file — `video_sha256`, and media duration against
 `frame_count`/`source_fps` or `duration_s` — are skipped with a warning when
 the media is not reachable, consistent with the other validators.
+
+These two checks also only *run* under `--strict`. Each is a hash plus an
+`ffprobe` per clip, so on a batch of any size they dominate validation time;
+by default the validator only checks that `video_id` resolves to a file, not
+its bytes. Use `--strict` when the bytes themselves need confirming — e.g.
+before a delivery is signed off — not for routine, fast validation.
 
 ## Linking model
 

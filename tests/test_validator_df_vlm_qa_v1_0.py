@@ -480,11 +480,17 @@ class TestMedia:
         assert result.is_valid(), result.errors
         assert _has(result.warnings, "does not resolve under the media root")
 
-    def test_missing_media_is_error_when_strict(self, tmp_path):
-        """Strict mode promotes it to an error."""
+    def test_missing_media_is_warning_even_when_not_permissive(self, tmp_path):
+        """Local media reachability never becomes an error, at any level.
+
+        A batch validated on a machine without the media checked out (or
+        media that only lives in S3) is not a content problem, so this check
+        stays a warning regardless of ``permissive``/``--strict``.
+        """
         result = _validate(_batch(tmp_path, _doc(), with_media=False), permissive=False)
-        assert not result.is_valid()
-        assert _has(result.errors, "does not resolve under the media root")
+        assert result.is_valid(), result.errors
+        assert _has(result.warnings, "does not resolve under the media root")
+        assert not _has(result.errors, "does not resolve under the media root")
 
     def test_unreachable_media_skips_byte_checks(self, tmp_path):
         """The skip itself is reported, per the format's contract."""
@@ -492,21 +498,76 @@ class TestMedia:
         result = _validate(_batch(tmp_path, doc, with_media=False), permissive=True)
         assert _has(result.warnings, "skipping video_sha256 and duration checks")
 
+    def test_byte_checks_are_skipped_by_default(self, tmp_path):
+        """sha256/duration are expensive (hash + ffprobe); permissive skips them.
+
+        A large batch validates quickly day to day; ``--strict`` is when the
+        bytes themselves need confirming.
+        """
+        doc = _doc(video_sha256="0" * 64)  # would be a mismatch if checked
+        result = _validate(_batch(tmp_path, doc), permissive=True)
+        assert result.is_valid(), result.errors
+        assert not _has(result.errors, "video_sha256 does not match")
+
     def test_sha256_match_passes(self, tmp_path):
         """The placeholder media hashes to the empty-input digest."""
         doc = _doc(video_sha256=_EMPTY_SHA256)
-        assert _validate(_batch(tmp_path, doc)).is_valid()
+        assert _validate(_batch(tmp_path, doc), permissive=False).is_valid()
 
     def test_sha256_mismatch_is_error(self, tmp_path):
-        """A re-encode invalidates the file loudly."""
+        """A re-encode invalidates the file loudly — under --strict."""
         doc = _doc(video_sha256="0" * 64)
-        result = _validate(_batch(tmp_path, doc))
+        result = _validate(_batch(tmp_path, doc), permissive=False)
         assert _has(result.errors, "video_sha256 does not match")
 
     def test_unprobeable_media_warns(self, tmp_path):
-        """A 0-byte placeholder has no duration, so the check is skipped."""
-        result = _validate(_batch(tmp_path, _doc()))
+        """A 0-byte placeholder has no duration, so the check is skipped — under --strict."""
+        result = _validate(_batch(tmp_path, _doc()), permissive=False)
         assert _has(result.warnings, "could not determine media duration")
+
+
+# ---------------------------------------------------------------------------
+# jsons/ + videos/ bundle layout
+# ---------------------------------------------------------------------------
+
+
+def _bundle(tmp_path: Path, doc: dict, *, with_videos_dir: bool = True) -> Path:
+    """Write *doc* into a ``{bundle}/jsons/`` + ``{bundle}/videos/`` layout.
+
+    Mirrors ``build_delivery_batch_v2.py`` output: the batch root discovered
+    by ``find_datasets`` is ``jsons/``, with clips under a sibling
+    ``videos/`` directory at the path named by ``video_id``.
+    """
+    bundle = tmp_path / "bundle"
+    (bundle / "jsons").mkdir(parents=True)
+    if with_videos_dir:
+        video_path = bundle / "videos" / doc["video_id"]
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"")
+    with open(bundle / "jsons" / "clip.json", "w") as f:
+        json.dump(doc, f)
+    return bundle / "jsons"
+
+
+class TestJsonsVideosBundle:
+    """The ``{bundle}/jsons/`` + ``{bundle}/videos/`` layout real batches use."""
+
+    def test_video_id_resolves_against_sibling_videos_dir(self, tmp_path):
+        """video_id is found under the sibling videos/, not jsons/ itself."""
+        doc = _doc(video_id="Vaidio/20250605/clips/clip.mp4")
+        result = _validate(_bundle(tmp_path, doc))
+        assert not _has(result.warnings, "does not resolve under the media root")
+
+    def test_missing_sibling_videos_dir_warns_once_up_front(self, tmp_path):
+        """No sibling videos/ at all is flagged as a batch-level layout issue."""
+        doc = _doc(video_id="Vaidio/20250605/clips/clip.mp4")
+        result = _validate(_bundle(tmp_path, doc, with_videos_dir=False))
+        assert _has(result.warnings, "jsons/ directory with no sibling videos/ directory")
+
+    def test_flat_batch_is_not_flagged(self, tmp_path):
+        """A batch root not named jsons/ never triggers the layout check."""
+        result = _validate(_batch(tmp_path, _doc()))
+        assert not _has(result.warnings, "no sibling videos/ directory")
 
 
 # ---------------------------------------------------------------------------
