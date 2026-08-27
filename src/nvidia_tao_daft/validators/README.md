@@ -51,14 +51,29 @@ toggleable; the exact set depends on the format.
 
 ### Permissive vs strict mode
 
-| Mode | Missing optional file | Missing required file |
-|------|-----------------------|-----------------------|
+| Mode | Missing optional file/dir | Missing required file/dir |
+|------|----------------------------|----------------------------|
 | `permissive=True` (CLI default) | warning | error |
 | `permissive=False` (CLI `--strict`) | error | error |
 
 `--strict` additionally treats any warning as an error in the CLI exit code.
 Required-vs-optional is decided per format — see each format's README for
 the specific list.
+
+**Media-existence checks are the exception**, and differ per format:
+
+| Format | Missing media |
+|---|---|
+| `df-vlm-qa-v1.0` | always a warning, never an error — independent of `--strict` |
+| `tao-vl-reason-v1.0` | always a warning, never an error — independent of `--strict` |
+| `cosmos-reason-v1.0` | always an error |
+
+Local media reachability depends on where the validator happens to run (no
+media checked out, or a `media_root: null` file meant to be paired with an
+out-of-band root), not on content correctness, which is why the first two
+never fail on it alone. `--strict` still fails these formats' runs if *any*
+warning is present for another reason, since that's a CLI-level rule, not
+specific to media.
 
 ---
 
