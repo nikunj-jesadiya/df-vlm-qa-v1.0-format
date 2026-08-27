@@ -163,11 +163,17 @@ class TestTaskTypeResolution:
 class TestCannotReconstruct:
     """The documented losses, and nothing silently beyond them."""
 
-    def test_tracking_empty_and_meta_omitted(self, tmp_path):
-        """No geometry survives the forward direction."""
+    def test_tracking_and_meta_both_omitted(self, tmp_path):
+        """No geometry survives the forward direction.
+
+        Both keys are left off entirely, not written empty/blank — tao-vl-
+        reason-v1.0 has nowhere to hold geometry, so there is nothing to
+        report finding-and-losing; an empty tracking: [] would misrepresent
+        "boxes were sought and none found" instead of "never sought."
+        """
         _, out = _convert(tmp_path, {"f": _annotation("open_qa", [_item(index="a:0")])})
         doc = _doc(out, "a")
-        assert doc["tracking"] == []
+        assert "tracking" not in doc
         assert "tracking_meta" not in doc
 
     def test_sha256_omitted_when_media_unreachable(self, tmp_path):
@@ -234,10 +240,10 @@ class TestGeometryFrom:
         assert _doc(out, "a")["sub_tasks"][0]["question"] == "current"
 
     def test_missing_donor_clip_warns(self, tmp_path):
-        """A clip with no donor keeps empty tracking, and says so."""
+        """A clip with no donor gets no tracking key at all, and says so."""
         files = {"f": _annotation("open_qa", [_item("clips/zz.mp4", index="zz:0")])}
         result, out = _convert(tmp_path, files, geometry_from=self._donor(tmp_path))
-        assert _doc(out, "zz")["tracking"] == []
+        assert "tracking" not in _doc(out, "zz")
         assert any("no donor document" in w for w in result.warnings)
 
     def test_empty_donor_batch_warns(self, tmp_path):
@@ -247,6 +253,79 @@ class TestGeometryFrom:
         files = {"f": _annotation("open_qa", [_item(index="a:0")])}
         result, _ = _convert(tmp_path, files, geometry_from=empty)
         assert any("no" in w and "donor" in w for w in result.warnings)
+
+
+class TestPlaceVideos:
+    """--place-videos switches to the jsons/+videos/ bundle layout."""
+
+    def test_default_stays_flat_and_untouched(self, tmp_path):
+        """Without the flag, documents stay flat and no videos/ appears."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(tmp_path, files, media=("clips/a.mp4",))
+        assert (out / "a.json").is_file()
+        assert not (out / "jsons").exists()
+        assert not (out / "videos").exists()
+
+    def test_places_media_and_nests_documents(self, tmp_path):
+        """The document moves under jsons/ and the media lands under videos/."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        result, out = _convert(
+            tmp_path, files, media=("clips/a.mp4",), place_videos="copy"
+        )
+        assert (out / "jsons" / "a.json").is_file()
+        assert (out / "videos" / "clips" / "a.mp4").is_file()
+        assert result.is_success()
+
+    def test_placed_media_matches_source_bytes(self, tmp_path):
+        """copy mode places the real bytes, not a stub."""
+        root = tmp_path / "ds"
+        root.mkdir()
+        (root / "clips").mkdir()
+        (root / "clips" / "a.mp4").write_bytes(b"real video bytes")
+        with open(root / "f.json", "w") as f:
+            json.dump(_annotation("open_qa", [_item(index="a:0")]), f)
+        out = tmp_path / "batch"
+        TaoVlReasonV1_0ToDfVlmQaV1_0Converter().convert_dataset(
+            root, out, place_videos="copy"
+        )
+        assert (out / "videos" / "clips" / "a.mp4").read_bytes() == b"real video bytes"
+
+    def test_video_id_needs_no_rewrite(self, tmp_path):
+        """video_id already names the path under videos/, unchanged."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(
+            tmp_path, files, media=("clips/a.mp4",), place_videos="copy"
+        )
+        doc = json.load(open(out / "jsons" / "a.json"))
+        assert doc["video_id"] == "clips/a.mp4"
+        assert (out / "videos" / doc["video_id"]).is_file()
+
+    def test_unreachable_media_warns_but_still_writes_document(self, tmp_path):
+        """A missing source file doesn't stop the batch from being written."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        result, out = _convert(tmp_path, files, place_videos="copy")
+        assert (out / "jsons" / "a.json").is_file()
+        assert not (out / "videos" / "clips" / "a.mp4").exists()
+        assert any("not reachable" in w for w in result.warnings)
+
+    def test_symlink_mode(self, tmp_path):
+        """symlink mode links rather than copies."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(
+            tmp_path, files, media=("clips/a.mp4",), place_videos="symlink"
+        )
+        placed = out / "videos" / "clips" / "a.mp4"
+        assert placed.is_symlink()
+
+    def test_hardlink_mode(self, tmp_path):
+        """hardlink mode links rather than copies."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(
+            tmp_path, files, media=("clips/a.mp4",), place_videos="hardlink"
+        )
+        src = tmp_path / "ds" / "clips" / "a.mp4"
+        placed = out / "videos" / "clips" / "a.mp4"
+        assert placed.stat().st_ino == src.stat().st_ino
 
 
 class TestEdgeCases:
@@ -279,7 +358,11 @@ class TestEdgeCases:
         """A clean dataset converts and exits 0."""
         root = _dataset(tmp_path, {"f": _annotation("open_qa", [_item(index="a:0")])})
         args = argparse.Namespace(
-            path=root, output=tmp_path / "batch", default_task_type=None, geometry_from=None
+            path=root,
+            output=tmp_path / "batch",
+            default_task_type=None,
+            geometry_from=None,
+            place_videos=None,
         )
         assert TaoVlReasonV1_0ToDfVlmQaV1_0Converter(args).run() == 0
 
@@ -336,7 +419,7 @@ class TestRoundTrip:
         back = self._round_trip(tmp_path)
         lost = {k for k in self.SOURCE if self.SOURCE.get(k) != back.get(k)}
         assert lost == {"tracking", "tracking_meta", "video_sha256"}
-        assert back["tracking"] == []
+        assert "tracking" not in back
         assert "tracking_meta" not in back
         assert "video_sha256" not in back
 

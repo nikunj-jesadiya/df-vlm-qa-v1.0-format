@@ -10,13 +10,15 @@ it means reading every annotation file under ``--path`` and regrouping the items
 by clip.
 
 The two directions are not inverses. Forward discards geometry; this direction
-cannot invent it back, so ``tracking`` comes out empty and ``tracking_meta`` is
-omitted unless ``--geometry-from`` points at a batch to recover them from.
+cannot invent it back, so both ``tracking`` and ``tracking_meta`` are omitted
+entirely unless ``--geometry-from`` points at a batch to recover them from.
 """
 
 import argparse
 import hashlib
 import json
+import os
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -63,15 +65,29 @@ class _Item:
 class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
     """Converts a tao-vl-reason-v1.0 dataset into a df-vlm-qa-v1.0 correction batch.
 
-    Output layout::
+    Output layout, by default::
 
         {output}/
         ├── <clip-stem>.json      (one document per distinct video_id)
         └── <clip-stem>.json
 
-    A seeded batch is schema-valid but not ready to ship: it carries no
-    annotation grid, so it trips the validator's "``tracking_meta`` present when
-    boxes were sought" warning until a tracker run supplies one.
+    With ``--place-videos {copy,symlink,hardlink}``, media is also placed
+    under ``videos/`` and documents move under ``jsons/`` — the
+    ``jsons/``+``videos/`` bundle layout df-vlm-qa-v1.0 batches are delivered
+    in::
+
+        {output}/
+        ├── jsons/
+        │   └── <clip-stem>.json
+        └── videos/
+            └── <video_id path>
+
+    Without ``--geometry-from``, ``tracking``/``tracking_meta`` are omitted
+    entirely rather than written empty — the validator reads that as a
+    QA-only document, not as "boxes were sought and found none." A seeded
+    batch can still fail validation for a different reason: if the QA text
+    carries ``<track>`` markers, every one becomes an unresolvable reference
+    once ``tracking`` is absent.
     """
 
     source_format: ClassVar[str] = SOURCE_FORMAT
@@ -103,6 +119,18 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             "tracking_meta and video_sha256 by video_id, turning this direction "
             "into a true round-trip.",
         )
+        parser.add_argument(
+            "--place-videos",
+            choices=("copy", "symlink", "hardlink"),
+            default=None,
+            help="Also place each clip's media under {output}/videos/, resolving it "
+            "from the source items' own media_root, and write documents under "
+            "{output}/jsons/ instead of {output}/ directly — the jsons/+videos/ "
+            "bundle layout df-vlm-qa-v1.0 batches are delivered in. Off by default "
+            "(documents are written flat under {output}/ and no media is touched). "
+            "A clip whose source media is unreachable is skipped with a warning; "
+            "its document is still written.",
+        )
 
     # ------------------------------------------------------------------
     # CLI execution
@@ -124,6 +152,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             output_path=Path(args.output),
             default_task_type=args.default_task_type,
             geometry_from=args.geometry_from,
+            place_videos=args.place_videos,
         )
 
         print("=" * 60)
@@ -160,6 +189,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         *,
         default_task_type: Optional[str] = None,
         geometry_from: Optional[Path] = None,
+        place_videos: Optional[str] = None,
     ) -> ConversionResult:
         """Regroup every tao-vl-reason-v1.0 item under *dataset_path* by clip.
 
@@ -167,6 +197,12 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         recovered from ``item_index`` where present; otherwise items fall back
         to file-then-array order and the loss of the original ordering is
         reported.
+
+        ``place_videos`` switches the output from a flat ``{output}/*.json``
+        drop to the ``{output}/jsons/`` + ``{output}/videos/`` bundle layout,
+        placing each clip's source media under ``videos/`` at the same path
+        its own ``video_id`` already names — which is what lets the batch
+        media root resolve it, unchanged, with no ``video_id`` rewrite needed.
         """
         dataset_path = Path(dataset_path).resolve()
         output_path = Path(output_path)
@@ -185,8 +221,14 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
 
         geometry = self._load_geometry(geometry_from, result) if geometry_from else {}
 
-        output_path.mkdir(parents=True, exist_ok=True)
+        docs_dir = output_path / "jsons" if place_videos else output_path
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        videos_dir = output_path / "videos"
+        if place_videos:
+            videos_dir.mkdir(parents=True, exist_ok=True)
+
         used_names: Dict[str, str] = {}
+        videos_placed = 0
         for video_id, items in sorted(by_clip.items()):
             doc = self._build_document(video_id, items, metadata, geometry, result)
             name = self._document_name(video_id, items)
@@ -197,12 +239,52 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
                 )
                 continue
             used_names[name] = video_id
-            with open(output_path / f"{name}.json", "w", encoding="utf-8") as f:
+
+            if place_videos:
+                media = items[0].item.get("_media")
+                if self._place_video(media, videos_dir / video_id, place_videos):
+                    videos_placed += 1
+                else:
+                    result.warnings.append(
+                        f"{video_id}: source media not reachable, nothing placed "
+                        "under videos/"
+                    )
+
+            with open(docs_dir / f"{name}.json", "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             result.samples_written += len(doc["sub_tasks"])
 
+        if place_videos:
+            result.warnings.append(
+                f"placed {videos_placed}/{len(used_names)} clip video(s) under "
+                f"{videos_dir}"
+            )
+
         return result
+
+    @staticmethod
+    def _place_video(media: Optional[Path], dest: Path, mode: str) -> bool:
+        """Place *media* at *dest* via *mode* (copy/symlink/hardlink).
+
+        Returns False without touching *dest* when *media* is not a reachable
+        file — leaving the document's ``video_id`` pointing at nothing under
+        ``videos/`` is preferable to guessing. A *dest* that already exists
+        (two clips sharing a physical file, or a re-run) is left alone and
+        counted as already placed.
+        """
+        if media is None or not Path(media).is_file():
+            return False
+        if dest.exists():
+            return True
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "copy":
+            shutil.copy2(media, dest)
+        elif mode == "symlink":
+            dest.symlink_to(Path(media).resolve())
+        else:
+            os.link(media, dest)
+        return True
 
     # ------------------------------------------------------------------
     # Source loading
@@ -346,7 +428,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         recovered = geometry.get(video_id)
         if recovered is None and geometry:
             result.warnings.append(
-                f"{video_id}: no donor document in --geometry-from, so tracking is empty"
+                f"{video_id}: no donor document in --geometry-from, so tracking is omitted"
             )
         recovered = recovered or {}
 
@@ -356,7 +438,8 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
 
         if "tracking_meta" in recovered:
             doc["tracking_meta"] = recovered["tracking_meta"]
-        doc["tracking"] = recovered.get("tracking", [])
+        if "tracking" in recovered:
+            doc["tracking"] = recovered["tracking"]
 
         doc["sub_tasks"] = [self._build_sub_task(i) for i in ordered]
         return doc
