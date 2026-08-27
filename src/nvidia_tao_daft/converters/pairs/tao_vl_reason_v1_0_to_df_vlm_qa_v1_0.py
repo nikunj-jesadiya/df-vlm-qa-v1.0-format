@@ -370,7 +370,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             "question": item.get("question", ""),
             "answer": item.get("answer", ""),
         }
-        if item.get("reasoning"):
+        if item.get("reasoning") is not None:
             sub_task["reasoning"] = item["reasoning"]
         return sub_task
 

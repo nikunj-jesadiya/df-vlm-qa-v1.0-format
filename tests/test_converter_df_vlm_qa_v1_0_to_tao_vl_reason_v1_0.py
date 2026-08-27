@@ -157,12 +157,22 @@ class TestItemShape:
         assert _load(out, "tracking_description")["items"][0]["item_index"] == "a:0"
         assert _load(out, "open_qa")["items"][0]["item_index"] == "a:1"
 
-    def test_reasoning_only_when_non_empty(self, tmp_path):
-        """An empty reasoning field is omitted rather than written blank."""
+    def test_reasoning_absent_stays_absent(self, tmp_path):
+        """A sub_task with no reasoning key at all gets no reasoning item field."""
+        _, out = _convert(tmp_path)
+        assert "reasoning" not in _load(out, "tracking_description")["items"][0]
+
+    def test_empty_reasoning_is_carried_not_dropped(self, tmp_path):
+        """An explicit reasoning: "" round-trips as "", distinct from absent.
+
+        Dropping it here would make it indistinguishable from a sub_task that
+        never had a reasoning key, which breaks an exact round trip back to
+        df-vlm-qa-v1.0.
+        """
         doc = copy.deepcopy(_DOC)
         doc["sub_tasks"][1]["reasoning"] = ""
         _, out = _convert(tmp_path, {"a": doc})
-        assert "reasoning" not in _load(out, "open_qa")["items"][0]
+        assert _load(out, "open_qa")["items"][0]["reasoning"] == ""
 
     def test_reasoning_carried(self, tmp_path):
         """A non-empty reasoning field rides along."""

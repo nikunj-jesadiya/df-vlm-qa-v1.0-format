@@ -368,6 +368,18 @@ class TestRoundTrip:
             "type": "annotation", "date": "2026-08-04", "license": "CC-BY-4.0"
         }
 
+    def test_empty_reasoning_survives_the_round_trip(self, tmp_path):
+        """An explicit reasoning: "" is not indistinguishable from absent.
+
+        A truthy check on either side of the round trip (``if reasoning:``)
+        treats "" the same as a missing key, silently turning an explicit
+        empty reasoning into no reasoning key at all.
+        """
+        source = copy.deepcopy(self.SOURCE)
+        source["sub_tasks"][1]["reasoning"] = ""
+        back = self._round_trip(tmp_path, source=source)
+        assert back["sub_tasks"][1]["reasoning"] == ""
+
     def test_skipped_sub_tasks_not_restored(self, tmp_path):
         """item_index reveals the gap but cannot fill it."""
         source = copy.deepcopy(self.SOURCE)

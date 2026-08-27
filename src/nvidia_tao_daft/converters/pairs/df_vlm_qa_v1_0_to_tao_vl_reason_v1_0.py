@@ -304,7 +304,7 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
                 "item_index": f"{stem}:{index}",
             }
             reasoning = sub_task.get("reasoning")
-            if reasoning:
+            if reasoning is not None:
                 item["reasoning"] = self._apply_markers(reasoning, markers)
             if video_url:
                 item["video_url"] = video_url
