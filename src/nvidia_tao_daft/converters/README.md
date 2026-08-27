@@ -28,23 +28,48 @@ See also: [CLI reference](../cli/README.md) · [validators](../validators/README
 
 ## `df-vlm-qa-v1.0` → `tao-vl-reason-v1.0`
 
-Turns a corrected batch into training files: one output file per source
-`task_type`, carrying `metadata.task`, with `media_root: null`.
+Turns a corrected batch into training files, in two segregated stages under
+`--output`:
 
-Each sub-task becomes one item — `video_id`, `question`, `answer`, `reasoning`
-when non-empty — plus an `item_index` of `<clip-stem>:<sub_task index>`, which
-routes a training item back to the exact sub-task of the exact clip.
-`video_url` carries through when present.
+```
+{output}/
+├── df_vlm_qa/                 Stage 1: every source document, normalized
+│   ├── <clip-stem>.json         to genuine df-vlm-qa-v1.0 shape, one per clip
+│   └── ...
+└── tao_vl_reason/             Stage 2: one file per source task_type,
+    ├── open_qa.json             carrying metadata.task, with media_root: null
+    └── ...
+```
+
+`--path` accepts three input shapes, auto-detected per file and mixable in
+one run:
+
+- a flat batch of `df-vlm-qa-v1.0` documents
+- a `jsons/`+`videos/` bundle (only the `jsons/` side is read)
+- the raw correction-platform export — one `.json` per clip carrying
+  `instances[].attributes[].name`, where the `webComponent` instance's
+  `delivery_output` is already the platform's own fully-reconstructed,
+  latest-corrected `df-vlm-qa-v1.0`-shaped payload (its `format` field is a
+  platform mislabel and is corrected on read). No chip/edit-history
+  reconstruction happens or is needed — `delivery_output` already carries
+  the latest edit per sentence, joined. A clip's stem for Stage 1's filename
+  and `item_index` comes from the document's own `video_id`, not the source
+  filename (a raw export's is `<uuid>.json.json`, not usable as a stem).
+
+Stage 2: each sub-task becomes one item — `video_id`, `question`, `answer`,
+`reasoning` when non-empty — plus an `item_index` of
+`<clip-stem>:<sub_task index>`, which routes a training item back to the
+exact sub-task of the exact clip. `video_url` carries through when present.
 
 **Lossy by construction.** `tracking` is dropped, because
 `tao-vl-reason-v1.0` has nowhere to put box geometry; the converter warns and
-the geometry stays in the source batch. `<SKIP>`ped sub-tasks are dropped and
-counted in `samples_skipped` — they were never human-corrected, so they are
-not training data.
+the geometry stays in Stage 1's `df_vlm_qa/`. `<SKIP>`ped sub-tasks are
+dropped and counted in `samples_skipped` — they were never human-corrected,
+so they are not training data.
 
 | Flag | Effect |
 |------|--------|
-| `--markers {keep,strip,drop}` | `<track>` handling in text. `keep` (default) leaves markers intact; `strip` unwraps to the bare `track_id`; `drop` removes marker and contents. |
+| `--markers {keep,strip,drop}` | `<track>` handling in text. `drop` (default) removes marker and contents — tracking is dropped in this direction regardless, so a kept or stripped marker is either an unresolvable reference downstream or a bare training-irrelevant id left in the text; `keep` leaves markers intact; `strip` unwraps to the bare `track_id`. |
 | `--exclude-task-type [T ...]` | Leave task types out. Every type converts by default; `tracking_description` is annotation scaffolding rather than a QA task, so it is the common choice here. |
 | `--description STR` | Suffixed with the task name into each output file's `metadata.description`. |
 

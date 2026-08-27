@@ -68,7 +68,12 @@ def _convert(tmp_path: Path, docs=None, **kwargs):
 
 
 def _load(out: Path, task_type: str) -> dict:
-    with open(out / f"{task_type}.json") as f:
+    with open(out / "tao_vl_reason" / f"{task_type}.json") as f:
+        return json.load(f)
+
+
+def _load_df_stage(out: Path, stem: str) -> dict:
+    with open(out / "df_vlm_qa" / f"{stem}.json") as f:
         return json.load(f)
 
 
@@ -94,13 +99,13 @@ class TestRegistration:
         )
         assert args.markers == "strip"
 
-    def test_markers_default_is_keep(self):
-        """The issue's suggested default."""
+    def test_markers_default_is_drop(self):
+        """Avoids leaving an unresolvable or training-irrelevant marker behind."""
         parser = argparse.ArgumentParser()
         subs = parser.add_subparsers(dest="target")
         DfVlmQaV1_0ToTaoVlReasonV1_0Converter.register_subparser(subs)
         args = parser.parse_args(["tao-vl-reason-v1.0", "--path", "a", "--output", "b"])
-        assert args.markers == "keep"
+        assert args.markers == "drop"
 
 
 class TestPartitioning:
@@ -110,7 +115,7 @@ class TestPartitioning:
         """Each source task_type becomes its own annotation file."""
         result, out = _convert(tmp_path)
         assert result.samples_written == 2
-        assert sorted(p.name for p in out.glob("*.json")) == [
+        assert sorted(p.name for p in (out / "tao_vl_reason").glob("*.json")) == [
             "open_qa.json",
             "tracking_description.json",
         ]
@@ -230,7 +235,7 @@ class TestSkipAndExclusion:
         result, out = _convert(tmp_path, {"a": doc})
         assert result.samples_skipped == 1
         assert result.samples_written == 1
-        assert not (out / "open_qa.json").exists()
+        assert not (out / "tao_vl_reason" / "open_qa.json").exists()
 
     def test_skip_makes_run_unsuccessful(self, tmp_path):
         """The output is smaller than the input, so is_success() is False."""
@@ -244,8 +249,8 @@ class TestSkipAndExclusion:
         result, out = _convert(tmp_path, exclude_task_types=["tracking_description"])
         assert result.samples_written == 1
         assert result.samples_skipped == 0
-        assert not (out / "tracking_description.json").exists()
-        assert (out / "open_qa.json").exists()
+        assert not (out / "tao_vl_reason" / "tracking_description.json").exists()
+        assert (out / "tao_vl_reason" / "open_qa.json").exists()
 
 
 class TestTrackingAndMetadata:
@@ -322,3 +327,152 @@ class TestRun:
         DfVlmQaV1_0ToTaoVlReasonV1_0Converter(args).run()
         meta = _load(tmp_path / "out", "open_qa")["metadata"]
         assert meta["description"] == "Batch 1 — open_qa items."
+
+
+def _raw_export(video_id: str, sub_tasks: list, *, video_url: str = "") -> dict:
+    """One raw correction-platform export file, matching the real shape.
+
+    Only the parts the converter reads are modeled: an ``instances`` list
+    with one ``webComponent`` entry whose ``delivery_output`` is already the
+    platform's fully-reconstructed document. Everything else real exports
+    carry (voting/textarea/checkbox instances, chip edit-history) is
+    deliberately absent — the converter never reads it.
+    """
+    return {
+        "metadata": {"name": "unrelated-platform-metadata"},
+        "instances": [
+            {"type": "checkbox", "attributes": []},  # a non-webComponent instance
+            {
+                "type": "webComponent",
+                "attributes": [
+                    {
+                        "name": {
+                            "delivery_output": {
+                                "format": "tao-vl-reason-v1.0",  # platform's own mislabel
+                                "metadata": _META,
+                                "video_id": video_id,
+                                "video_url": video_url or None,
+                                "sub_tasks": sub_tasks,
+                            }
+                        }
+                    }
+                ],
+            },
+        ],
+    }
+
+
+class TestStageOneOutput:
+    """Every discovered document is normalized into {output}/df_vlm_qa/."""
+
+    def test_genuine_document_is_copied_through(self, tmp_path):
+        """A real df-vlm-qa-v1.0 input lands in df_vlm_qa/ unchanged."""
+        _, out = _convert(tmp_path)
+        assert _load_df_stage(out, "a")["format"] == "df-vlm-qa-v1.0"
+        assert _load_df_stage(out, "a")["sub_tasks"] == _DOC["sub_tasks"]
+
+    def test_stage_one_and_stage_two_are_segregated(self, tmp_path):
+        """The two stages sit in their own subfolders, not mixed together."""
+        _, out = _convert(tmp_path)
+        assert sorted(p.name for p in out.iterdir()) == ["df_vlm_qa", "tao_vl_reason"]
+
+
+class TestBundleLayoutInput:
+    """--path can point at a jsons/+videos/ bundle, not just a flat batch."""
+
+    def test_jsons_videos_bundle_is_discovered(self, tmp_path):
+        """Documents under jsons/ are found; videos/ has no .json to conflict."""
+        bundle = tmp_path / "bundle"
+        (bundle / "jsons").mkdir(parents=True)
+        (bundle / "videos").mkdir()
+        (bundle / "videos" / "a.mp4").write_bytes(b"")
+        with open(bundle / "jsons" / "a.json", "w") as f:
+            json.dump(_DOC, f)
+        result = DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(
+            bundle, tmp_path / "out"
+        )
+        assert result.samples_written == 2
+        assert _load_df_stage(tmp_path / "out", "a")["video_id"] == "clips/a.mp4"
+
+
+class TestRawCorrectionExportInput:
+    """--path can also point at the raw correction-platform export."""
+
+    def test_delivery_output_is_extracted_and_normalized(self, tmp_path):
+        """The nested delivery_output becomes a proper df-vlm-qa-v1.0 document."""
+        raw = _raw_export(
+            "clips/a.mp4",
+            [{"task_type": "open_qa", "question": "q?", "answer": "a."}],
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        with open(src / "a.json.json", "w") as f:
+            json.dump(raw, f)
+        result = DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(
+            src, tmp_path / "out"
+        )
+        assert result.errors == []
+        doc = _load_df_stage(tmp_path / "out", "a")
+        assert doc["format"] == "df-vlm-qa-v1.0"
+        assert doc["video_id"] == "clips/a.mp4"
+        assert doc["sub_tasks"][0]["question"] == "q?"
+
+    def test_clip_stem_comes_from_video_id_not_filename(self, tmp_path):
+        """The raw export's own filename (<uuid>.json.json) is not usable as a stem."""
+        raw = _raw_export(
+            "clips/real-clip-id.mp4",
+            [{"task_type": "open_qa", "question": "q?", "answer": "a."}],
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        with open(src / "whatever-the-platform-named-it.json.json", "w") as f:
+            json.dump(raw, f)
+        DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(src, tmp_path / "out")
+        assert (tmp_path / "out" / "df_vlm_qa" / "real-clip-id.json").is_file()
+
+    def test_reaches_tao_vl_reason_output_like_any_other_input(self, tmp_path):
+        """Once normalized, it flows through Stage 2 exactly like a real document."""
+        raw = _raw_export(
+            "clips/a.mp4",
+            [{"task_type": "open_qa", "question": "q?", "answer": "a."}],
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        with open(src / "a.json.json", "w") as f:
+            json.dump(raw, f)
+        result = DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(
+            src, tmp_path / "out"
+        )
+        assert result.samples_written == 1
+        with open(tmp_path / "out" / "tao_vl_reason" / "open_qa.json") as f:
+            items = json.load(f)["items"]
+        assert items[0]["question"] == "q?"
+
+    def test_non_document_json_is_skipped_not_errored(self, tmp_path):
+        """A file matching neither shape (e.g. a platform manifest) is ignored."""
+        src = tmp_path / "src"
+        src.mkdir()
+        with open(src / "manifest.json", "w") as f:
+            json.dump({"unrelated": "manifest shape"}, f)
+        result = DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(
+            src, tmp_path / "out"
+        )
+        assert any("No df-vlm-qa-v1.0 documents found" in e for e in result.errors)
+
+    def test_mixed_genuine_and_raw_export_in_one_run(self, tmp_path):
+        """A genuine document and a raw export can sit in the same --path."""
+        src = tmp_path / "src"
+        src.mkdir()
+        with open(src / "a.json", "w") as f:
+            json.dump(_DOC, f)
+        raw = _raw_export(
+            "clips/b.mp4",
+            [{"task_type": "open_qa", "question": "second?", "answer": "b."}],
+        )
+        with open(src / "b.json.json", "w") as f:
+            json.dump(raw, f)
+        result = DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(
+            src, tmp_path / "out"
+        )
+        assert result.errors == []
+        assert {p.stem for p in (tmp_path / "out" / "df_vlm_qa").glob("*.json")} == {"a", "b"}

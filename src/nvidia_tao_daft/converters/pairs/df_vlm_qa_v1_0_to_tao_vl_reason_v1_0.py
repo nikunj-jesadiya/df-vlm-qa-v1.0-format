@@ -12,6 +12,16 @@ The conversion is lossy by construction: ``tracking`` has nowhere to go in
 emitted item carries an ``item_index`` of ``<clip-stem>:<sub_task index>``, which
 is the route back to the exact sub-task of the exact clip — and the join key the
 reverse converter uses.
+
+``--path`` accepts three input shapes, auto-detected per file, mixable in one
+run: a flat batch of ``df-vlm-qa-v1.0`` documents, a ``jsons/``+``videos/``
+bundle (only the ``jsons/`` side is read), and the raw correction-platform
+export — one ``.json`` per clip carrying ``instances[].attributes[].name``,
+where the ``webComponent`` instance's ``delivery_output`` is already the
+platform's own fully-reconstructed, latest-corrected ``df-vlm-qa-v1.0``-shaped
+payload (its ``format`` field is a platform mislabel and is corrected on
+read). No chip/edit-history reconstruction is needed or attempted:
+``delivery_output`` already carries the latest edit per sentence, joined.
 """
 
 import argparse
@@ -22,7 +32,8 @@ from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from nvidia_tao_daft.converters.base import BaseConverter, ConversionResult
-from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import TRACK_REF, find_datasets, is_document, is_skipped
+from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import FORMAT as DF_FORMAT
+from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import TRACK_REF, is_document, is_skipped
 from nvidia_tao_daft.utils.utils import FormatError, read_json_object
 
 #: ``metadata`` keys carried from the source batch onto every output file.
@@ -32,6 +43,10 @@ _CARRIED_METADATA = ("date", "license")
 _MULTISPACE = re.compile(r"[ \t]{2,}")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?])")
 
+#: Stage 1 / Stage 2 output subdirectory names under ``--output``.
+_DF_STAGE_DIR = "df_vlm_qa"
+_TAO_STAGE_DIR = "tao_vl_reason"
+
 
 def _describe_variant(metadata_json: str, names: List[str]) -> str:
     """Render one distinct metadata block and the files carrying it."""
@@ -39,19 +54,51 @@ def _describe_variant(metadata_json: str, names: List[str]) -> str:
     return f"{names[0]}{more} has {metadata_json}"
 
 
+def _extract_delivery_output(data: dict) -> Optional[dict]:
+    """Pull the platform's already-reconstructed document out of a raw export.
+
+    The raw correction-platform export wraps one ``webComponent`` instance
+    per clip; that instance's ``attributes[].name.delivery_output`` is
+    already the fully-reconstructed, latest-corrected document — same shape
+    as a ``df-vlm-qa-v1.0`` document (``video_id``, ``sub_tasks``, ...), just
+    with ``format`` mislabeled by the platform. Returns ``None`` when *data*
+    doesn't have this shape at all, so the caller can fall through to
+    treating it as a genuine ``df-vlm-qa-v1.0`` document instead.
+    """
+    instances = data.get("instances")
+    if not isinstance(instances, list):
+        return None
+    for item in instances:
+        if not isinstance(item, dict) or item.get("type") != "webComponent":
+            continue
+        for attribute in item.get("attributes") or []:
+            name = attribute.get("name") if isinstance(attribute, dict) else None
+            delivery = name.get("delivery_output") if isinstance(name, dict) else None
+            if isinstance(delivery, dict) and "sub_tasks" in delivery and "video_id" in delivery:
+                delivery = dict(delivery)
+                delivery["format"] = DF_FORMAT
+                return delivery
+    return None
+
+
 class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
     """Converts a df-vlm-qa-v1.0 batch to a tao-vl-reason-v1.0 training dataset.
 
-    Output layout::
+    Output layout, segregated into two stages::
 
         {output}/
-        ├── open_qa.json              (one annotation file per source task_type)
-        ├── scene_description.json
-        └── ...
+        ├── df_vlm_qa/                 (Stage 1: every source document, normalized
+        │   ├── <clip-stem>.json        to genuine df-vlm-qa-v1.0 shape, one per clip
+        │   └── ...                     — this is what a raw correction-platform
+        │                                export gets flattened into)
+        └── tao_vl_reason/             (Stage 2: the training files this converter
+            ├── open_qa.json            has always produced, one per task_type)
+            ├── scene_description.json
+            └── ...
 
-    Every file uses ``media_root: null``; items keep the source ``video_id``
-    verbatim, so the consumer points ``media_root`` at whichever store holds
-    the clips.
+    Every Stage 2 file uses ``media_root: null``; items keep the source
+    ``video_id`` verbatim, so the consumer points ``media_root`` at whichever
+    store holds the clips.
     """
 
     source_format: ClassVar[str] = "df-vlm-qa-v1.0"
@@ -74,10 +121,13 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         parser.add_argument(
             "--markers",
             choices=cls.MARKER_MODES,
-            default="keep",
+            default="drop",
             help="How to handle <track> markers in question / answer / reasoning: "
-            "'keep' leaves them intact (default), 'strip' unwraps them to the bare "
-            "track_id, 'drop' removes them and their contents entirely.",
+            "'drop' removes them and their contents entirely (default) -- tracking "
+            "is dropped in this direction regardless, so a kept or stripped marker "
+            "is either an unresolvable reference downstream or a bare "
+            "training-irrelevant id left in the text; 'keep' leaves them intact, "
+            "'strip' unwraps them to the bare track_id.",
         )
         parser.add_argument(
             "--exclude-task-type",
@@ -155,17 +205,22 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         dataset_path: Path,
         output_path: Path,
         *,
-        markers: str = "keep",
+        markers: str = "drop",
         exclude_task_types: Optional[List[str]] = None,
         description: Optional[str] = None,
     ) -> ConversionResult:
         """Convert every df-vlm-qa-v1.0 document under *dataset_path*.
 
-        Sub-tasks from all clips are aggregated by ``task_type`` into one
-        annotation file per type at the output root. A non-uniform ``metadata``
-        block across the batch is an error: the output files carry a single
-        merged metadata block, so there is no honest way to represent two
-        different licenses or dates in one file.
+        Discovery is recursive and format-mixed: a flat batch, a
+        ``jsons/``+``videos/`` bundle, and the raw correction-platform export
+        can all sit under the same ``dataset_path`` and are normalized
+        together. Stage 1 writes every normalized document to
+        ``{output}/df_vlm_qa/`` first, then Stage 2 aggregates sub-tasks from
+        all clips by ``task_type`` into one annotation file per type under
+        ``{output}/tao_vl_reason/``. A non-uniform ``metadata`` block across
+        the batch is an error: the Stage 2 files carry a single merged
+        metadata block, so there is no honest way to represent two different
+        licenses or dates in one file.
         """
         dataset_path = Path(dataset_path).resolve()
         output_path = Path(output_path)
@@ -180,6 +235,13 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
             )
             return result
 
+        df_stage_dir = output_path / _DF_STAGE_DIR
+        df_stage_dir.mkdir(parents=True, exist_ok=True)
+        for stem, doc in documents:
+            with open(df_stage_dir / f"{stem}.json", "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+
         source_metadata = self._uniform_metadata(documents, result)
         if result.errors:
             return result
@@ -188,21 +250,22 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         items_by_type: Dict[str, List[dict]] = defaultdict(list)
         dropped_tracks = 0
 
-        for doc_path, doc in documents:
+        for stem, doc in documents:
             dropped_tracks += len(doc.get("tracking", []))
-            self._collect_items(doc_path, doc, markers, excluded, items_by_type, result)
+            self._collect_items(stem, doc, markers, excluded, items_by_type, result)
 
         if dropped_tracks:
             result.warnings.append(
                 f"{dropped_tracks} track(s) across {len(documents)} clip(s) were dropped — "
                 f"{self.target_format} has nowhere to put box geometry. The geometry stays "
-                f"in the {self.source_format} batch."
+                f"in {df_stage_dir}."
             )
 
-        output_path.mkdir(parents=True, exist_ok=True)
+        tao_stage_dir = output_path / _TAO_STAGE_DIR
+        tao_stage_dir.mkdir(parents=True, exist_ok=True)
         for task_type, items in sorted(items_by_type.items()):
             self._write_annotation_file(
-                output_path, task_type, items, source_metadata, description
+                tao_stage_dir, task_type, items, source_metadata, description
             )
             result.samples_written += len(items)
 
@@ -215,28 +278,40 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         self,
         dataset_path: Path,
         result: ConversionResult,
-    ) -> List[Tuple[Path, dict]]:
-        """Return ``[(path, doc), ...]`` for every document in the batch.
+    ) -> List[Tuple[str, dict]]:
+        """Return ``[(clip_stem, doc), ...]`` for every document under *dataset_path*.
 
-        Discovery reuses the validator's rule — both the top-level ``format``
-        and the ``metadata.type`` discriminator must match — so a batch's build
-        artefacts are not mistaken for documents.
+        Recursive and format-mixed by design: for each ``*.json`` found
+        anywhere under *dataset_path* (a flat batch, the ``jsons/`` side of a
+        bundle — ``videos/`` holds no ``.json`` to match — or a raw
+        correction-platform export are all just files somewhere in this
+        tree), a genuine ``df-vlm-qa-v1.0`` document is used as-is; failing
+        that, ``delivery_output`` is extracted if present. A build artefact
+        (a batch's own ``manifest.json``, for instance) matches neither shape
+        and is silently skipped. ``clip_stem`` comes from the document's own
+        ``video_id``, not the source filename, since a raw export's filename
+        (``<uuid>.json.json``) is not a usable stem.
         """
-        documents: List[Tuple[Path, dict]] = []
-        for batch_root in find_datasets(dataset_path):
-            for doc_path in sorted(batch_root.glob("*.json")):
-                try:
-                    data = read_json_object(doc_path)
-                except FormatError as e:
-                    result.errors.append(str(e))
+        documents: List[Tuple[str, dict]] = []
+        for doc_path in sorted(dataset_path.rglob("*.json")):
+            try:
+                data = read_json_object(doc_path)
+            except FormatError as e:
+                result.errors.append(str(e))
+                continue
+            if is_document(data):
+                doc = data
+            else:
+                doc = _extract_delivery_output(data)
+                if doc is None:
                     continue
-                if is_document(data):
-                    documents.append((doc_path, data))
+            stem = Path(doc["video_id"]).stem
+            documents.append((stem, doc))
         return documents
 
     @staticmethod
     def _uniform_metadata(
-        documents: List[Tuple[Path, dict]],
+        documents: List[Tuple[str, dict]],
         result: ConversionResult,
     ) -> Dict[str, Any]:
         """Return the batch's single ``metadata`` block, or record an error.
@@ -247,9 +322,9 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         per-task output files have exactly one metadata block to put it in.
         """
         seen: Dict[str, List[str]] = defaultdict(list)
-        for doc_path, doc in documents:
+        for stem, doc in documents:
             key = json.dumps(doc.get("metadata", {}), sort_keys=True)
-            seen[key].append(doc_path.name)
+            seen[key].append(f"{stem}.json")
         if len(seen) > 1:
             variants = "; ".join(
                 _describe_variant(key, names) for key, names in sorted(seen.items())
@@ -268,7 +343,7 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
     # ------------------------------------------------------------------
     def _collect_items(
         self,
-        doc_path: Path,
+        stem: str,
         doc: dict,
         markers: str,
         excluded: set,
@@ -281,7 +356,6 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         never human-corrected, so they are not training data. Excluded task
         types are dropped silently; that is a deliberate filter, not a loss.
         """
-        stem = doc_path.stem
         video_id = doc["video_id"]
         video_url = doc.get("video_url")
 
@@ -292,7 +366,7 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
             if is_skipped(sub_task):
                 result.samples_skipped += 1
                 result.warnings.append(
-                    f"{doc_path.name}: sub_tasks[{index}] is <SKIP>ped and was dropped — "
+                    f"{stem}.json: sub_tasks[{index}] is <SKIP>ped and was dropped — "
                     "it was never human-corrected"
                 )
                 continue
