@@ -327,6 +327,46 @@ class TestPlaceVideos:
         assert placed.stat().st_ino == src.stat().st_ino
 
 
+class TestS3Prefix:
+    """--s3-prefix fills in video_url only when the source had none."""
+
+    def test_builds_video_url_from_prefix_and_video_id(self, tmp_path):
+        """video_url is {s3_prefix}/videos/{video_id}, matching build_delivery_batch_v2.py."""
+        files = {"f": _annotation("open_qa", [_item("clips/a.mp4", index="a:0")])}
+        _, out = _convert(
+            tmp_path, files, s3_prefix="s3://bucket/batch_001"
+        )
+        doc = _doc(out, "a")
+        assert doc["video_url"] == "s3://bucket/batch_001/videos/clips/a.mp4"
+
+    def test_trailing_slash_on_prefix_is_normalized(self, tmp_path):
+        """A trailing slash on --s3-prefix doesn't produce a double slash."""
+        files = {"f": _annotation("open_qa", [_item("clips/a.mp4", index="a:0")])}
+        _, out = _convert(
+            tmp_path, files, s3_prefix="s3://bucket/batch_001/"
+        )
+        doc = _doc(out, "a")
+        assert doc["video_url"] == "s3://bucket/batch_001/videos/clips/a.mp4"
+
+    def test_existing_video_url_is_never_overwritten(self, tmp_path):
+        """A video_url the source already carried takes priority over --s3-prefix."""
+        files = {
+            "f": _annotation(
+                "open_qa",
+                [_item("clips/a.mp4", index="a:0", video_url="s3://original/a.mp4")],
+            )
+        }
+        _, out = _convert(tmp_path, files, s3_prefix="s3://bucket/batch_001")
+        doc = _doc(out, "a")
+        assert doc["video_url"] == "s3://original/a.mp4"
+
+    def test_absent_by_default(self, tmp_path):
+        """Without --s3-prefix and no source video_url, the field stays absent."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(tmp_path, files)
+        assert "video_url" not in _doc(out, "a")
+
+
 class TestEdgeCases:
     """Inputs that have no honest representation in the target."""
 
@@ -362,6 +402,7 @@ class TestEdgeCases:
             default_task_type=None,
             geometry_from=None,
             place_videos=None,
+            s3_prefix=None,
         )
         assert TaoVlReasonV1_0ToDfVlmQaV1_0Converter(args).run() == 0
 

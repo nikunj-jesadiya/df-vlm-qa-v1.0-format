@@ -129,6 +129,15 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             "A clip whose source media is unreachable is skipped with a warning; "
             "its document is still written.",
         )
+        parser.add_argument(
+            "--s3-prefix",
+            type=str,
+            default=None,
+            help="s3:// batch prefix to build video_url from as "
+            "'{s3-prefix}/videos/{video_id}', matching build_delivery_batch_v2.py's "
+            "own convention. Only fills in documents whose source items carried no "
+            "video_url at all — an existing one is never overwritten.",
+        )
 
     # ------------------------------------------------------------------
     # CLI execution
@@ -151,6 +160,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             default_task_type=args.default_task_type,
             geometry_from=args.geometry_from,
             place_videos=args.place_videos,
+            s3_prefix=args.s3_prefix,
         )
 
         print("=" * 60)
@@ -188,6 +198,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         default_task_type: Optional[str] = None,
         geometry_from: Optional[Path] = None,
         place_videos: Optional[str] = None,
+        s3_prefix: Optional[str] = None,
     ) -> ConversionResult:
         """Regroup every tao-vl-reason-v1.0 item under *dataset_path* by clip.
 
@@ -201,6 +212,11 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         ``{output}/videos/`` at the same path its own ``video_id`` already
         names — which is what lets the batch media root resolve it,
         unchanged, with no ``video_id`` rewrite needed.
+
+        ``s3_prefix`` fills ``video_url`` in as
+        ``"{s3_prefix}/videos/{video_id}"`` for documents whose source items
+        carried none at all — it never overwrites one a source item already
+        had.
         """
         dataset_path = Path(dataset_path).resolve()
         output_path = Path(output_path)
@@ -228,7 +244,9 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         used_names: Dict[str, str] = {}
         videos_placed = 0
         for video_id, items in sorted(by_clip.items()):
-            doc = self._build_document(video_id, items, metadata, geometry, result)
+            doc = self._build_document(
+                video_id, items, metadata, geometry, result, s3_prefix=s3_prefix
+            )
             name = self._document_name(video_id, items)
             if name in used_names and used_names[name] != video_id:
                 result.errors.append(
@@ -403,6 +421,8 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         metadata: Dict[str, Any],
         geometry: Dict[str, Dict[str, Any]],
         result: ConversionResult,
+        *,
+        s3_prefix: Optional[str] = None,
     ) -> dict:
         """Assemble one df-vlm-qa-v1.0 document for a single clip.
 
@@ -420,6 +440,8 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         video_url = next(
             (i.item["video_url"] for i in ordered if i.item.get("video_url")), None
         )
+        if not video_url and s3_prefix:
+            video_url = f"{s3_prefix.rstrip('/')}/videos/{video_id}"
         if video_url:
             doc["video_url"] = video_url
 
