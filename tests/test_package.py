@@ -52,14 +52,20 @@ class TestImports:
         from nvidia_tao_daft.converters import (
             BaseConverter,
             MetropolisV3_0ToCosmosReasonV1_0Converter,
+            DfVlmQaV1_0ToTaoVlReasonV1_0Converter,
             MetropolisV3_0ToTaoVlReasonV1_0Converter,
+            TaoVlReasonV1_0ToDfVlmQaV1_0Converter,
         )
 
         pairs = {(c.source_format, c.target_format) for c in BaseConverter.converters}
         assert ("metropolis-v3.0", "cosmos-reason-v1.0") in pairs
         assert ("metropolis-v3.0", "tao-vl-reason-v1.0") in pairs
+        assert ("df-vlm-qa-v1.0", "tao-vl-reason-v1.0") in pairs
+        assert ("tao-vl-reason-v1.0", "df-vlm-qa-v1.0") in pairs
         assert MetropolisV3_0ToCosmosReasonV1_0Converter is not None
         assert MetropolisV3_0ToTaoVlReasonV1_0Converter is not None
+        assert DfVlmQaV1_0ToTaoVlReasonV1_0Converter is not None
+        assert TaoVlReasonV1_0ToDfVlmQaV1_0Converter is not None
 
     def test_import_cli(self):
         """Test importing CLI module."""

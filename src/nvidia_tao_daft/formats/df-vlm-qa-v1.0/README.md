@@ -138,12 +138,18 @@ tao-daft validate df-vlm-qa-v1.0 --path {batch}/
 
 ## Conversion
 
-No converter pair ships for this format yet.
+Unlike the other format pairs in this repo, conversion runs in **both**
+directions between `df-vlm-qa-v1.0` and `tao-vl-reason-v1.0`. The two
+directions are not inverses: forward discards geometry, and reverse cannot
+invent it back.
 
-Converting to `tao-vl-reason-v1.0` would be lossy by construction: that format
-has nowhere to hold box geometry, so `tracking` and `tracking_meta` would be
-dropped. Since the geometry is the reason this format exists, a target format
-that can carry it needs to be settled first.
+```bash
+# corrected batch → training files, one per task_type
+tao-daft convert df-vlm-qa-v1.0 tao-vl-reason-v1.0 --path {batch}/ --output {dst}/
+
+# existing training set → seeded correction batch, one document per clip
+tao-daft convert tao-vl-reason-v1.0 df-vlm-qa-v1.0 --path {dst}/ --output {batch}/
+```
 
 ## Specs
 

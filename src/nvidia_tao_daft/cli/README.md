@@ -131,6 +131,8 @@ tao-daft convert {source} {target}
 |--------|--------|
 | `metropolis-v3.0` | `cosmos-reason-v1.0` |
 | `metropolis-v3.0` | `tao-vl-reason-v1.0` |
+| `df-vlm-qa-v1.0` | `tao-vl-reason-v1.0` |
+| `tao-vl-reason-v1.0` | `df-vlm-qa-v1.0` |
 
 ### Common options
 

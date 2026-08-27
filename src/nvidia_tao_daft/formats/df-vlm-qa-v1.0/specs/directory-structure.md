@@ -57,12 +57,11 @@ relative to the `videos/` root (e.g. `Vaidio/20250605/clips/<clip>.mp4`).
 
 ## Filename convention
 
-The conventional filename is the clip stem, matching the media it describes.
-
-Keeping the two equal is what lets an individual sub-task be addressed as
-`<clip-stem>:<sub_task index>` — a stable reference to the exact sub-task of
-the exact clip, which any consumer regrouping or flattening a batch needs in
-order to find its way back.
+The conventional filename is the clip stem. The forward converter builds
+`item_index` as `<clip-stem>:<sub_task index>`, so keeping the filename equal
+to the clip stem is what lets a training item route back to the exact
+sub-task of the exact clip — and what lets the reverse converter recover both
+the grouping and the original `sub_tasks` ordering.
 
 ## One document per clip
 
