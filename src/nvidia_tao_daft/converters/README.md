@@ -66,11 +66,14 @@ both the grouping and the original `sub_tasks` ordering. When absent, items fall
 back to file-then-array order and the converter warns. `metadata.task` becomes
 `task_type`; a source file without one needs `--default-task-type`.
 
+Documents always write under `{output}/jsons/` — the `jsons/`+`videos/` bundle
+layout df-vlm-qa-v1.0 batches are delivered in.
+
 ### What cannot be reconstructed
 
 | Field | Result | Why |
 |---|---|---|
-| `tracking` | `[]` | No geometry survives the forward direction |
+| `tracking` | omitted entirely | No geometry survives the forward direction; an empty `[]` would misreport "boxes sought, none found" instead of "never sought" |
 | `tracking_meta` | omitted | The grid is a property of a tracker run, not of QA text |
 | `video_sha256` | recomputed from media when reachable, else omitted | Guessing it would be worse than omitting |
 | `<SKIP>`ped sub-tasks | not restored | `item_index` reveals the gap but cannot fill it |
@@ -80,15 +83,16 @@ back to file-then-array order and the converter warns. `metadata.task` becomes
 |------|--------|
 | `--default-task-type T` | `task_type` for items whose source file has no `metadata.task`. |
 | `--geometry-from <batch>/` | Re-attaches `tracking`, `tracking_meta` and `video_sha256` by `video_id` from an existing batch, making the round trip lossless apart from the `metadata` extras above. |
+| `--place-videos {copy,symlink,hardlink}` | Also places each clip's source media under `{output}/videos/`, resolved from the source items' own `media_root`. `video_id` needs no rewrite — placing the file at `videos/<video_id>` already matches where the batch media root resolves it. A clip whose source media is unreachable is skipped with a warning; its document is still written. |
 
 ### Seeded batches and `<track>` markers
 
-A batch seeded without `--geometry-from` has empty `tracking`. If the source QA
-text still carries `<track>` markers — which it does when the forward direction
-ran with `--markers keep` — every marker is then an unresolvable reference, and
-the validator reports each as an **error**. Three ways to get a batch that
-validates: seed with `--geometry-from`, run the forward direction with
-`--markers strip` or `drop`, or supply a tracker run before shipping.
+A batch seeded without `--geometry-from` has no `tracking` key at all. If the
+source QA text still carries `<track>` markers — which it does when the forward
+direction ran with `--markers keep` — every marker is then an unresolvable
+reference, and the validator reports each as an **error**. Three ways to get a
+batch that validates: seed with `--geometry-from`, run the forward direction
+with `--markers strip` or `drop`, or supply a tracker run before shipping.
 
 ---
 

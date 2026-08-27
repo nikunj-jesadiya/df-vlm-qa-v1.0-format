@@ -67,7 +67,7 @@ def _convert(tmp_path: Path, files: dict, *, media=(), **kwargs):
 
 
 def _doc(out: Path, stem: str) -> dict:
-    with open(out / f"{stem}.json") as f:
+    with open(out / "jsons" / f"{stem}.json") as f:
         return json.load(f)
 
 
@@ -108,7 +108,7 @@ class TestRegrouping:
             "bcq": _annotation("bcq", [_item("clips/a.mp4", index="a:1")]),
         }
         result, out = _convert(tmp_path, files)
-        assert sorted(p.stem for p in out.glob("*.json")) == ["a", "b"]
+        assert sorted(p.stem for p in (out / "jsons").glob("*.json")) == ["a", "b"]
         assert result.samples_written == 3
 
     def test_sub_task_order_from_item_index(self, tmp_path):
@@ -136,7 +136,7 @@ class TestRegrouping:
         """The stem the forward direction wrote round-trips exactly."""
         files = {"f": _annotation("open_qa", [_item("x/y/clip.mp4", index="original_stem:0")])}
         _, out = _convert(tmp_path, files)
-        assert (out / "original_stem.json").exists()
+        assert (out / "jsons" / "original_stem.json").exists()
 
 
 class TestTaskTypeResolution:
@@ -256,18 +256,17 @@ class TestGeometryFrom:
 
 
 class TestPlaceVideos:
-    """--place-videos switches to the jsons/+videos/ bundle layout."""
+    """Documents always live under jsons/; --place-videos adds videos/ too."""
 
-    def test_default_stays_flat_and_untouched(self, tmp_path):
-        """Without the flag, documents stay flat and no videos/ appears."""
+    def test_default_writes_jsons_and_no_videos(self, tmp_path):
+        """Without the flag, documents are under jsons/ and no videos/ appears."""
         files = {"f": _annotation("open_qa", [_item(index="a:0")])}
         _, out = _convert(tmp_path, files, media=("clips/a.mp4",))
-        assert (out / "a.json").is_file()
-        assert not (out / "jsons").exists()
+        assert (out / "jsons" / "a.json").is_file()
         assert not (out / "videos").exists()
 
-    def test_places_media_and_nests_documents(self, tmp_path):
-        """The document moves under jsons/ and the media lands under videos/."""
+    def test_places_media_alongside_jsons(self, tmp_path):
+        """--place-videos adds videos/ next to the jsons/ that's always there."""
         files = {"f": _annotation("open_qa", [_item(index="a:0")])}
         result, out = _convert(
             tmp_path, files, media=("clips/a.mp4",), place_videos="copy"
@@ -399,7 +398,7 @@ class TestRoundTrip:
         DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(batch, mid)
         out = tmp_path / "back"
         TaoVlReasonV1_0ToDfVlmQaV1_0Converter().convert_dataset(mid, out, **reverse_kwargs)
-        with open(out / "a.json") as f:
+        with open(out / "jsons" / "a.json") as f:
             return json.load(f)
 
     def test_sub_tasks_survive_exactly(self, tmp_path):
@@ -475,7 +474,7 @@ class TestRoundTrip:
         DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(batch, mid)
         out = tmp_path / "back"
         TaoVlReasonV1_0ToDfVlmQaV1_0Converter().convert_dataset(mid, out)
-        with open(out / "a.json") as f:
+        with open(out / "jsons" / "a.json") as f:
             back = json.load(f)
         assert len(back["sub_tasks"]) == 2
         assert [s["question"] for s in back["sub_tasks"]] == ["first?", "third?"]

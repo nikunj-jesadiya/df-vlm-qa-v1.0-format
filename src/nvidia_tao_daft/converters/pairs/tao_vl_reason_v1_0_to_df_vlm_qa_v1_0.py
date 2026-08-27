@@ -65,16 +65,16 @@ class _Item:
 class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
     """Converts a tao-vl-reason-v1.0 dataset into a df-vlm-qa-v1.0 correction batch.
 
-    Output layout, by default::
+    Output layout::
 
         {output}/
-        ├── <clip-stem>.json      (one document per distinct video_id)
-        └── <clip-stem>.json
+        └── jsons/
+            ├── <clip-stem>.json      (one document per distinct video_id)
+            └── <clip-stem>.json
 
     With ``--place-videos {copy,symlink,hardlink}``, media is also placed
-    under ``videos/`` and documents move under ``jsons/`` — the
-    ``jsons/``+``videos/`` bundle layout df-vlm-qa-v1.0 batches are delivered
-    in::
+    under ``{output}/videos/`` — the ``jsons/``+``videos/`` bundle layout
+    df-vlm-qa-v1.0 batches are delivered in::
 
         {output}/
         ├── jsons/
@@ -124,10 +124,8 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             choices=("copy", "symlink", "hardlink"),
             default=None,
             help="Also place each clip's media under {output}/videos/, resolving it "
-            "from the source items' own media_root, and write documents under "
-            "{output}/jsons/ instead of {output}/ directly — the jsons/+videos/ "
-            "bundle layout df-vlm-qa-v1.0 batches are delivered in. Off by default "
-            "(documents are written flat under {output}/ and no media is touched). "
+            "from the source items' own media_root — documents already write under "
+            "{output}/jsons/ regardless. Off by default (no media is touched). "
             "A clip whose source media is unreachable is skipped with a warning; "
             "its document is still written.",
         )
@@ -198,11 +196,11 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         to file-then-array order and the loss of the original ordering is
         reported.
 
-        ``place_videos`` switches the output from a flat ``{output}/*.json``
-        drop to the ``{output}/jsons/`` + ``{output}/videos/`` bundle layout,
-        placing each clip's source media under ``videos/`` at the same path
-        its own ``video_id`` already names — which is what lets the batch
-        media root resolve it, unchanged, with no ``video_id`` rewrite needed.
+        Documents always write under ``{output}/jsons/``. ``place_videos``
+        additionally places each clip's source media under
+        ``{output}/videos/`` at the same path its own ``video_id`` already
+        names — which is what lets the batch media root resolve it,
+        unchanged, with no ``video_id`` rewrite needed.
         """
         dataset_path = Path(dataset_path).resolve()
         output_path = Path(output_path)
@@ -221,7 +219,7 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
 
         geometry = self._load_geometry(geometry_from, result) if geometry_from else {}
 
-        docs_dir = output_path / "jsons" if place_videos else output_path
+        docs_dir = output_path / "jsons"
         docs_dir.mkdir(parents=True, exist_ok=True)
         videos_dir = output_path / "videos"
         if place_videos:
