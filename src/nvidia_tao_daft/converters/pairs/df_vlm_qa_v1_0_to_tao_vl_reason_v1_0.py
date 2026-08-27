@@ -8,10 +8,12 @@ Turns a corrected batch into training files. Sub-tasks are aggregated by
 datasets are already partitioned.
 
 The conversion is lossy by construction: ``tracking`` has nowhere to go in
-``tao-vl-reason-v1.0``, so the geometry stays behind in the source batch. Every
-emitted item carries an ``item_index`` of ``<clip-stem>:<sub_task index>``, which
-is the route back to the exact sub-task of the exact clip — and the join key the
-reverse converter uses.
+``tao-vl-reason-v1.0``, so the geometry stays behind in the source batch.
+Items carry only ``video_id``/``question``/``answer``/``reasoning`` — no
+``item_index`` or ``video_url`` — this direction's output is plain training
+data, not a round-trip staging format. Without ``item_index``, the reverse
+converter can no longer recover a clip's exact original sub_task order; it
+falls back to file-then-array order and says so.
 
 ``--path`` accepts three input shapes, auto-detected per file, mixable in one
 run: a flat batch of ``df-vlm-qa-v1.0`` documents, a ``jsons/``+``videos/``
@@ -33,7 +35,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from nvidia_tao_daft.converters.base import BaseConverter, ConversionResult
 from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import FORMAT as DF_FORMAT
-from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import TRACK_REF, is_document, is_skipped
+from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import TRACK_REF, is_document
 from nvidia_tao_daft.utils.utils import FormatError, read_json_object
 
 #: ``metadata`` keys carried from the source batch onto every output file.
@@ -151,9 +153,7 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
     def run(self) -> int:
         """Convert the batch at ``--path`` into ``--output``.
 
-        Returns 0 when every sub-task was written, 1 when anything errored or
-        was skipped — including ``<SKIP>``ped sub-tasks, which are a deliberate
-        omission but still mean the output is smaller than the input.
+        Returns 0 when every sub-task was written, 1 when anything errored.
         """
         from nvidia_tao_daft import __version__
 
@@ -250,9 +250,9 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
         items_by_type: Dict[str, List[dict]] = defaultdict(list)
         dropped_tracks = 0
 
-        for stem, doc in documents:
+        for _stem, doc in documents:
             dropped_tracks += len(doc.get("tracking", []))
-            self._collect_items(stem, doc, markers, excluded, items_by_type, result)
+            self._collect_items(doc, markers, excluded, items_by_type)
 
         if dropped_tracks:
             result.warnings.append(
@@ -343,45 +343,35 @@ class DfVlmQaV1_0ToTaoVlReasonV1_0Converter(BaseConverter):
     # ------------------------------------------------------------------
     def _collect_items(
         self,
-        stem: str,
         doc: dict,
         markers: str,
         excluded: set,
         items_by_type: Dict[str, List[dict]],
-        result: ConversionResult,
     ) -> None:
         """Turn one clip's sub-tasks into tao-vl-reason items.
 
-        ``<SKIP>``ped sub-tasks are dropped and counted as skipped — they were
-        never human-corrected, so they are not training data. Excluded task
-        types are dropped silently; that is a deliberate filter, not a loss.
+        Every sub-task is copied through as-is, ``<SKIP>``ped or not. Excluded
+        task types are dropped silently; that is a deliberate filter, not a
+        loss. Items carry only ``video_id``/``question``/``answer``/
+        ``reasoning`` — no ``item_index`` or ``video_url`` — since this
+        direction's output is meant to be plain training data, not a
+        round-trip staging format.
         """
         video_id = doc["video_id"]
-        video_url = doc.get("video_url")
 
-        for index, sub_task in enumerate(doc["sub_tasks"]):
+        for sub_task in doc["sub_tasks"]:
             task_type = sub_task["task_type"]
             if task_type in excluded:
-                continue
-            if is_skipped(sub_task):
-                result.samples_skipped += 1
-                result.warnings.append(
-                    f"{stem}.json: sub_tasks[{index}] is <SKIP>ped and was dropped — "
-                    "it was never human-corrected"
-                )
                 continue
 
             item: Dict[str, Any] = {
                 "video_id": video_id,
                 "question": self._apply_markers(sub_task["question"], markers),
                 "answer": self._apply_markers(sub_task["answer"], markers),
-                "item_index": f"{stem}:{index}",
             }
             reasoning = sub_task.get("reasoning")
             if reasoning is not None:
                 item["reasoning"] = self._apply_markers(reasoning, markers)
-            if video_url:
-                item["video_url"] = video_url
 
             items_by_type[task_type].append(item)
 

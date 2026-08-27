@@ -612,35 +612,53 @@ class TestRoundTrip:
         with open(out / "jsons" / "a.json") as f:
             return json.load(f)
 
-    def test_sub_tasks_survive_exactly(self, tmp_path):
-        """Content and ordering both come back intact."""
+    def test_sub_tasks_survive_by_content_not_order(self, tmp_path):
+        """Content survives exactly; order does not -- there's no item_index left
+        to recover it, so items group by task_type (file-then-array order)."""
         back = self._round_trip(tmp_path)
-        assert back["sub_tasks"] == self.SOURCE["sub_tasks"]
+        assert sorted(back["sub_tasks"], key=str) == sorted(
+            self.SOURCE["sub_tasks"], key=str
+        )
+        # bcq's file sorts before open_qa's, so the single bcq item comes first.
+        assert [s["question"] for s in back["sub_tasks"]] == ["second?", "first?", "third?"]
 
     def test_identity_fields_survive(self, tmp_path):
-        """The clip's identity and location are preserved."""
+        """The clip's identity is preserved; video_url is not -- this direction
+        never carries it forward, by design."""
         back = self._round_trip(tmp_path)
         assert back["video_id"] == self.SOURCE["video_id"]
-        assert back["video_url"] == self.SOURCE["video_url"]
+        assert "video_url" not in back
         assert back["format"] == "df-vlm-qa-v1.0"
 
     def test_documented_losses_and_no_others(self, tmp_path):
-        """Exactly tracking, tracking_meta, video_sha256 and metadata extras."""
+        """Exactly tracking, tracking_meta, video_sha256, video_url and metadata extras."""
         back = self._round_trip(tmp_path)
-        lost = {k for k in self.SOURCE if self.SOURCE.get(k) != back.get(k)}
-        assert lost == {"tracking", "tracking_meta", "video_sha256"}
+        lost = {
+            k for k in self.SOURCE
+            if k != "sub_tasks" and self.SOURCE.get(k) != back.get(k)
+        }
+        assert lost == {"tracking", "tracking_meta", "video_sha256", "video_url"}
         assert "tracking" not in back
         assert "tracking_meta" not in back
         assert "video_sha256" not in back
+        assert "video_url" not in back
 
     def test_geometry_from_restores_the_losses(self, tmp_path):
-        """With the donor batch, only metadata extras differ."""
+        """With the donor batch, tracking/tracking_meta/video_sha256 come back;
+        video_url and sub_task order do not -- geometry_from only ever restores
+        geometry, and there's no item_index left to restore order with."""
         batch = tmp_path / "donor"
         batch.mkdir()
         with open(batch / "a.json", "w") as f:
             json.dump(self.SOURCE, f)
         back = self._round_trip(tmp_path, geometry_from=batch)
-        assert back == self.SOURCE
+        assert back["tracking"] == self.SOURCE["tracking"]
+        assert back["tracking_meta"] == self.SOURCE["tracking_meta"]
+        assert back["video_sha256"] == self.SOURCE["video_sha256"]
+        assert "video_url" not in back
+        assert sorted(back["sub_tasks"], key=str) == sorted(
+            self.SOURCE["sub_tasks"], key=str
+        )
 
     def test_metadata_extras_are_lost_undocumented(self, tmp_path):
         """description and tags do not survive, and the format does not say so.
@@ -671,21 +689,6 @@ class TestRoundTrip:
         source = copy.deepcopy(self.SOURCE)
         source["sub_tasks"][1]["reasoning"] = ""
         back = self._round_trip(tmp_path, source=source)
-        assert back["sub_tasks"][1]["reasoning"] == ""
+        bcq = next(s for s in back["sub_tasks"] if s["task_type"] == "bcq")
+        assert bcq["reasoning"] == ""
 
-    def test_skipped_sub_tasks_not_restored(self, tmp_path):
-        """item_index reveals the gap but cannot fill it."""
-        source = copy.deepcopy(self.SOURCE)
-        source["sub_tasks"][1]["answer"] = "<SKIP>n/a"
-        batch = tmp_path / "src"
-        batch.mkdir()
-        with open(batch / "a.json", "w") as f:
-            json.dump(source, f)
-        mid = tmp_path / "mid"
-        DfVlmQaV1_0ToTaoVlReasonV1_0Converter().convert_dataset(batch, mid)
-        out = tmp_path / "back"
-        TaoVlReasonV1_0ToDfVlmQaV1_0Converter().convert_dataset(mid, out)
-        with open(out / "jsons" / "a.json") as f:
-            back = json.load(f)
-        assert len(back["sub_tasks"]) == 2
-        assert [s["question"] for s in back["sub_tasks"]] == ["first?", "third?"]

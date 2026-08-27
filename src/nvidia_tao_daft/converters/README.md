@@ -53,19 +53,20 @@ one run:
   platform mislabel and is corrected on read). No chip/edit-history
   reconstruction happens or is needed — `delivery_output` already carries
   the latest edit per sentence, joined. A clip's stem for Stage 1's filename
-  and `item_index` comes from the document's own `video_id`, not the source
-  filename (a raw export's is `<uuid>.json.json`, not usable as a stem).
+  comes from the document's own `video_id`, not the source filename (a raw
+  export's is `<uuid>.json.json`, not usable as a stem).
 
 Stage 2: each sub-task becomes one item — `video_id`, `question`, `answer`,
-`reasoning` when non-empty — plus an `item_index` of
-`<clip-stem>:<sub_task index>`, which routes a training item back to the
-exact sub-task of the exact clip. `video_url` carries through when present.
+`reasoning` when non-empty. No `item_index` or `video_url`: this direction's
+output is plain training data, not a round-trip staging format. Without
+`item_index`, the reverse converter can no longer recover a clip's exact
+original sub_task order — it falls back to file-then-array order (items
+group by which task_type file they came from) and says so.
 
 **Lossy by construction.** `tracking` is dropped, because
 `tao-vl-reason-v1.0` has nowhere to put box geometry; the converter warns and
-the geometry stays in Stage 1's `df_vlm_qa/`. `<SKIP>`ped sub-tasks are
-dropped and counted in `samples_skipped` — they were never human-corrected,
-so they are not training data.
+the geometry stays in Stage 1's `df_vlm_qa/`. `<SKIP>`ped sub-tasks are not
+special-cased — they're copied through like any other sub-task.
 
 | Flag | Effect |
 |------|--------|
@@ -101,7 +102,6 @@ layout df-vlm-qa-v1.0 batches are delivered in.
 | `tracking` | omitted entirely | No geometry survives the forward direction; an empty `[]` would misreport "boxes sought, none found" instead of "never sought" |
 | `tracking_meta` | omitted | The grid is a property of a tracker run, not of QA text |
 | `video_sha256` | recomputed from media when reachable, else omitted | Guessing it would be worse than omitting |
-| `<SKIP>`ped sub-tasks | not restored | `item_index` reveals the gap but cannot fill it |
 | `metadata` beyond `date` / `license` | dropped | The forward direction carries only those two |
 
 | Flag | Effect |

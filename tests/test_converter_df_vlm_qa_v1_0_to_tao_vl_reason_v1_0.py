@@ -148,19 +148,14 @@ class TestItemShape:
     """Each sub-task becomes one tao-vl-reason item."""
 
     def test_item_fields(self, tmp_path):
-        """video_id, question, answer and item_index are always present."""
+        """video_id, question and answer are always present; nothing else."""
         _, out = _convert(tmp_path)
         item = _load(out, "open_qa")["items"][0]
         assert item["video_id"] == "clips/a.mp4"
         assert item["question"] == "What happens?"
         assert item["answer"] == "Nothing."
-        assert item["item_index"] == "a:1"
-
-    def test_item_index_is_clip_stem_and_source_index(self, tmp_path):
-        """The index is the sub-task's position in the source, not the output."""
-        _, out = _convert(tmp_path)
-        assert _load(out, "tracking_description")["items"][0]["item_index"] == "a:0"
-        assert _load(out, "open_qa")["items"][0]["item_index"] == "a:1"
+        assert "item_index" not in item
+        assert "video_url" not in item
 
     def test_reasoning_absent_stays_absent(self, tmp_path):
         """A sub_task with no reasoning key at all gets no reasoning item field."""
@@ -184,15 +179,10 @@ class TestItemShape:
         _, out = _convert(tmp_path)
         assert _load(out, "open_qa")["items"][0]["reasoning"] == "Because nothing moves."
 
-    def test_video_url_carried_when_present(self, tmp_path):
-        """tao-vl-reason items are additionalProperties: true, so it fits."""
+    def test_video_url_never_carried_even_when_source_has_one(self, tmp_path):
+        """This direction's output is plain training data, not a staging format."""
         doc = dict(copy.deepcopy(_DOC), video_url="s3://bucket/clips/a.mp4")
         _, out = _convert(tmp_path, {"a": doc})
-        assert _load(out, "open_qa")["items"][0]["video_url"] == "s3://bucket/clips/a.mp4"
-
-    def test_video_url_absent_when_source_has_none(self, tmp_path):
-        """Nothing is invented when the source omits it."""
-        _, out = _convert(tmp_path)
         assert "video_url" not in _load(out, "open_qa")["items"][0]
 
 
@@ -226,23 +216,23 @@ class TestMarkers:
 
 
 class TestSkipAndExclusion:
-    """<SKIP>ped sub-tasks and --exclude-task-type."""
+    """<SKIP>ped sub-tasks are copied through as-is; --exclude-task-type still filters."""
 
-    def test_skipped_sub_tasks_dropped_and_counted(self, tmp_path):
-        """They were never human-corrected, so they are not training data."""
+    def test_skipped_sub_task_is_copied_through_not_dropped(self, tmp_path):
+        """<SKIP> is not special-cased -- the item is written like any other."""
         doc = copy.deepcopy(_DOC)
         doc["sub_tasks"][1]["answer"] = "<SKIP>not legible"
         result, out = _convert(tmp_path, {"a": doc})
-        assert result.samples_skipped == 1
-        assert result.samples_written == 1
-        assert not (out / "tao_vl_reason" / "open_qa.json").exists()
+        assert result.samples_skipped == 0
+        assert result.samples_written == 2
+        assert _load(out, "open_qa")["items"][0]["answer"] == "<SKIP>not legible"
 
-    def test_skip_makes_run_unsuccessful(self, tmp_path):
-        """The output is smaller than the input, so is_success() is False."""
+    def test_skipped_sub_task_does_not_affect_success(self, tmp_path):
+        """No special-casing means it can never make the run unsuccessful."""
         doc = copy.deepcopy(_DOC)
         doc["sub_tasks"][1]["question"] = "<SKIP>q"
         result, _ = _convert(tmp_path, {"a": doc})
-        assert not result.is_success()
+        assert result.is_success()
 
     def test_exclude_task_type(self, tmp_path):
         """Excluded types are dropped silently — a filter, not a loss."""
@@ -308,15 +298,15 @@ class TestRun:
         )
         assert DfVlmQaV1_0ToTaoVlReasonV1_0Converter(args).run() == 0
 
-    def test_run_incomplete_on_skip(self, tmp_path):
-        """A <SKIP>ped sub-task means the output is smaller than asked for."""
+    def test_run_succeeds_with_a_skipped_sub_task(self, tmp_path):
+        """<SKIP> is copied through, not special-cased, so it doesn't fail the run."""
         doc = copy.deepcopy(_DOC)
         doc["sub_tasks"][1]["answer"] = "<SKIP>n/a"
         args = argparse.Namespace(
             path=_batch(tmp_path, {"a": doc}), output=tmp_path / "out", markers="keep",
             exclude_task_type=None, description=None,
         )
-        assert DfVlmQaV1_0ToTaoVlReasonV1_0Converter(args).run() == 1
+        assert DfVlmQaV1_0ToTaoVlReasonV1_0Converter(args).run() == 0
 
     def test_description_lands_in_metadata(self, tmp_path):
         """--description is suffixed with the task name, per the local script."""
