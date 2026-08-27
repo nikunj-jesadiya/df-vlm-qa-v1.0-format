@@ -87,7 +87,10 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
     QA-only document, not as "boxes were sought and found none." A seeded
     batch can still fail validation for a different reason: if the QA text
     carries ``<track>`` markers, every one becomes an unresolvable reference
-    once ``tracking`` is absent.
+    once ``tracking`` is absent. With ``--geometry-from``, any donor
+    ``task_type`` the source had no coverage of at all — commonly
+    ``tracking_description`` — is backfilled from the donor too, so recovered
+    boxes come with something that identifies them.
     """
 
     source_format: ClassVar[str] = SOURCE_FORMAT
@@ -117,7 +120,10 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             default=None,
             help="Path to an existing df-vlm-qa-v1.0 batch. Re-attaches tracking, "
             "tracking_meta and video_sha256 by video_id, turning this direction "
-            "into a true round-trip.",
+            "into a true round-trip. Also backfills any donor sub_tasks whose "
+            "task_type the source had no coverage of at all (e.g. "
+            "tracking_description), so recovered boxes aren't left with nothing "
+            "identifying them.",
         )
         parser.add_argument(
             "--place-videos",
@@ -243,10 +249,12 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
 
         used_names: Dict[str, str] = {}
         videos_placed = 0
+        geometry_sub_tasks_added = 0
         for video_id, items in sorted(by_clip.items()):
-            doc = self._build_document(
+            doc, backfilled = self._build_document(
                 video_id, items, metadata, geometry, result, s3_prefix=s3_prefix
             )
+            geometry_sub_tasks_added += backfilled
             name = self._document_name(video_id, items)
             if name in used_names and used_names[name] != video_id:
                 result.errors.append(
@@ -269,12 +277,17 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             with open(docs_dir / f"{name}.json", "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=2, ensure_ascii=False)
                 f.write("\n")
-            result.samples_written += len(doc["sub_tasks"])
+            result.samples_written += len(items)
 
         if place_videos:
             result.warnings.append(
                 f"placed {videos_placed}/{len(used_names)} clip video(s) under "
                 f"{videos_dir}"
+            )
+        if geometry_sub_tasks_added:
+            result.warnings.append(
+                f"backfilled {geometry_sub_tasks_added} sub_task(s) from --geometry-from "
+                "donor documents, for task_types the source had no coverage of at all"
             )
 
         return result
@@ -388,9 +401,17 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
     ) -> Dict[str, Dict[str, Any]]:
         """Index an existing df-vlm-qa-v1.0 batch by ``video_id``.
 
-        Only the fields the forward direction destroys are recovered; the
-        sub-tasks in the donor batch are ignored, since the whole point is to
-        carry the *current* QA text forward onto the *original* geometry.
+        The fields the forward direction destroys are recovered, plus the
+        donor's own ``sub_tasks`` for the *backfill* pass in
+        ``_build_document``: a donor ``task_type`` the source never had —
+        typically ``tracking_description`` or
+        ``grounded_spatial_temporal_description``, which need real tracking
+        to exist at all and so can never come from a tao-vl-reason-v1.0
+        source — is copied over whole, generically, whatever the type turns
+        out to be. A donor ``task_type`` the source already covers is left
+        alone; the whole point of the *other* recovered fields is to carry
+        the source's *current* QA text forward onto the *donor's* geometry,
+        and that would defeat it.
         """
         index: Dict[str, Dict[str, Any]] = {}
         for batch_root in find_df_batches(Path(geometry_from)):
@@ -401,9 +422,10 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
                     continue
                 if not is_document(data):
                     continue
-                index[data["video_id"]] = {
-                    k: data[k] for k in _GEOMETRY_FIELDS if k in data
-                }
+                entry = {k: data[k] for k in _GEOMETRY_FIELDS if k in data}
+                if data.get("sub_tasks"):
+                    entry["sub_tasks"] = data["sub_tasks"]
+                index[data["video_id"]] = entry
         if not index:
             result.warnings.append(
                 f"--geometry-from {geometry_from}: no {SOURCE_FORMAT} donor documents "
@@ -423,11 +445,13 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         result: ConversionResult,
         *,
         s3_prefix: Optional[str] = None,
-    ) -> dict:
+    ) -> Tuple[dict, int]:
         """Assemble one df-vlm-qa-v1.0 document for a single clip.
 
         Field order follows the schema's own ordering so a diff against a
-        donor batch stays readable.
+        donor batch stays readable. Returns ``(doc, backfilled_count)`` — the
+        count of donor ``sub_tasks`` copied in because their ``task_type``
+        had no source coverage at all, for the caller's batch-level summary.
         """
         ordered = sorted(items, key=lambda i: i.sort_key)
 
@@ -462,7 +486,13 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             doc["tracking"] = recovered["tracking"]
 
         doc["sub_tasks"] = [self._build_sub_task(i) for i in ordered]
-        return doc
+
+        donor_subs = recovered.get("sub_tasks", [])
+        existing_types = {s["task_type"] for s in doc["sub_tasks"]}
+        backfilled = [dict(s) for s in donor_subs if s.get("task_type") not in existing_types]
+        doc["sub_tasks"] += backfilled
+
+        return doc, len(backfilled)
 
     @staticmethod
     def _build_sub_task(wrapped: _Item) -> dict:

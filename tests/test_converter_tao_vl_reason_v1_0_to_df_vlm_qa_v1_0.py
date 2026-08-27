@@ -255,6 +255,75 @@ class TestGeometryFrom:
         assert any("no" in w and "donor" in w for w in result.warnings)
 
 
+class TestGeometryBackfill:
+    """--geometry-from backfills donor task_types the source had none of."""
+
+    def _donor_with(self, tmp_path: Path, *extra_sub_tasks) -> Path:
+        donor = tmp_path / "donor"
+        donor.mkdir()
+        doc = {
+            "format": "df-vlm-qa-v1.0",
+            "metadata": {"type": "annotation", "license": "CC-BY-4.0"},
+            "video_id": "clips/a.mp4",
+            "tracking_meta": {
+                "time_unit": "frame_index", "box_order": "t_x1_y1_x2_y2",
+                "coordinate_space": "pixel", "width": 100, "height": 100,
+                "source_fps": 30.0, "frame_count": 300, "sample_fps": 7.5,
+            },
+            "tracking": [{"track_id": "person_T001", "track": [[0, 1, 1, 2, 2]]}],
+            "sub_tasks": [
+                {"task_type": "open_qa", "question": "donor-open-qa", "answer": "ignored"},
+                *extra_sub_tasks,
+            ],
+        }
+        with open(donor / "a.json", "w") as f:
+            json.dump(doc, f)
+        return donor
+
+    def test_backfills_task_type_the_source_never_had(self, tmp_path):
+        """tracking_description exists only in the donor -> gets copied in."""
+        donor = self._donor_with(
+            tmp_path,
+            {
+                "task_type": "tracking_description",
+                "question": "Describe <track>person_T001</track>.",
+                "answer": "a person <track>person_T001</track>",
+            },
+        )
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        result, out = _convert(tmp_path, files, geometry_from=donor)
+        doc = _doc(out, "a")
+        types = [s["task_type"] for s in doc["sub_tasks"]]
+        assert types == ["open_qa", "tracking_description"]
+        assert any("backfilled 1 sub_task" in w for w in result.warnings)
+
+    def test_generic_not_hardcoded_to_known_types(self, tmp_path):
+        """Any donor task_type absent from the source is backfilled, whatever it is."""
+        donor = self._donor_with(
+            tmp_path,
+            {"task_type": "some_future_task_type", "question": "q?", "answer": "a."},
+        )
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(tmp_path, files, geometry_from=donor)
+        types = [s["task_type"] for s in _doc(out, "a")["sub_tasks"]]
+        assert "some_future_task_type" in types
+
+    def test_type_already_covered_by_source_is_not_backfilled(self, tmp_path):
+        """open_qa is in both -> the source's own item wins, donor's is dropped."""
+        donor = self._donor_with(tmp_path)  # only donor's own open_qa
+        files = {"f": _annotation("open_qa", [_item(q="current", index="a:0")])}
+        _, out = _convert(tmp_path, files, geometry_from=donor)
+        doc = _doc(out, "a")
+        assert len(doc["sub_tasks"]) == 1
+        assert doc["sub_tasks"][0]["question"] == "current"
+
+    def test_no_geometry_from_means_no_backfill(self, tmp_path):
+        """Without the flag, nothing is added regardless of donor content."""
+        files = {"f": _annotation("open_qa", [_item(index="a:0")])}
+        _, out = _convert(tmp_path, files)
+        assert len(_doc(out, "a")["sub_tasks"]) == 1
+
+
 class TestPlaceVideos:
     """Documents always live under jsons/; --place-videos adds videos/ too."""
 

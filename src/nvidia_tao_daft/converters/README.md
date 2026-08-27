@@ -82,8 +82,9 @@ layout df-vlm-qa-v1.0 batches are delivered in.
 | Flag | Effect |
 |------|--------|
 | `--default-task-type T` | `task_type` for items whose source file has no `metadata.task`. |
-| `--geometry-from <batch>/` | Re-attaches `tracking`, `tracking_meta` and `video_sha256` by `video_id` from an existing batch, making the round trip lossless apart from the `metadata` extras above. |
+| `--geometry-from <batch>/` | Re-attaches `tracking`, `tracking_meta` and `video_sha256` by `video_id` from an existing batch, making the round trip lossless apart from the `metadata` extras above. Also backfills any donor `task_type` the source had no coverage of at all — generic, not hardcoded to `tracking_description`/`grounded_spatial_temporal_description`, though those are the common case since they require tracking to exist and so can never come from a tao-vl-reason-v1.0 source. A `task_type` the source already covers is left alone; the source's current text wins there. |
 | `--place-videos {copy,symlink,hardlink}` | Also places each clip's source media under `{output}/videos/`, resolved from the source items' own `media_root`. `video_id` needs no rewrite — placing the file at `videos/<video_id>` already matches where the batch media root resolves it. A clip whose source media is unreachable is skipped with a warning; its document is still written. |
+| `--s3-prefix <s3://...>` | Builds `video_url` as `{s3-prefix}/videos/{video_id}` for documents whose source items carried none at all, matching `build_delivery_batch_v2.py`'s own convention. Never overwrites a `video_url` a source item already had. |
 
 ### Seeded batches and `<track>` markers
 
