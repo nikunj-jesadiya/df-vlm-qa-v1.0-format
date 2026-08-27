@@ -18,17 +18,25 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from nvidia_tao_daft.converters.base import BaseConverter, ConversionResult
-from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import is_document
+from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import TRACK_REF, is_document
 from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import find_datasets as find_df_batches
 from nvidia_tao_daft.utils.tao_vl_reason_v1_0 import FORMAT as SOURCE_FORMAT
 from nvidia_tao_daft.utils.tao_vl_reason_v1_0 import find_datasets, resolve_media_path
 from nvidia_tao_daft.utils.utils import FormatError, read_json_object
+
+#: Wraps a whole already-tagged span, so re-tagging never happens.
+_TAGGED_SPAN_RE = re.compile(r"<track>[^<>]*</track>")
+#: A description phrase's leading article, tolerated on either side of a match.
+_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+#: Below this many words a phrase is too generic to identify one specific track.
+_MIN_DESCRIPTION_WORDS = 4
 
 #: ``metadata`` keys carried from the source dataset onto every emitted document.
 _CARRIED_METADATA = ("date", "license")
@@ -90,7 +98,12 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
     once ``tracking`` is absent. With ``--geometry-from``, any donor
     ``task_type`` the source had no coverage of at all — commonly
     ``tracking_description`` — is backfilled from the donor too, so recovered
-    boxes come with something that identifies them.
+    boxes come with something that identifies them. The *source's own* text
+    is also scanned for a recovered track's literal id or the description
+    its backfilled ``tracking_description`` sub_task gives it, and tagged
+    with ``<track>`` wherever found but not already marked — a VRA sentence
+    like "a man in a white T-shirt" never had a reason to name
+    ``person_T001`` before geometry existed to attach to it.
     """
 
     source_format: ClassVar[str] = SOURCE_FORMAT
@@ -123,7 +136,9 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             "into a true round-trip. Also backfills any donor sub_tasks whose "
             "task_type the source had no coverage of at all (e.g. "
             "tracking_description), so recovered boxes aren't left with nothing "
-            "identifying them.",
+            "identifying them. Also tags the source's own text with <track> "
+            "wherever it names a recovered track's literal id or its backfilled "
+            "description, skipping anything already marked.",
         )
         parser.add_argument(
             "--place-videos",
@@ -250,11 +265,13 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         used_names: Dict[str, str] = {}
         videos_placed = 0
         geometry_sub_tasks_added = 0
+        track_refs_tagged = 0
         for video_id, items in sorted(by_clip.items()):
-            doc, backfilled = self._build_document(
+            doc, backfilled, tagged = self._build_document(
                 video_id, items, metadata, geometry, result, s3_prefix=s3_prefix
             )
             geometry_sub_tasks_added += backfilled
+            track_refs_tagged += tagged
             name = self._document_name(video_id, items)
             if name in used_names and used_names[name] != video_id:
                 result.errors.append(
@@ -288,6 +305,11 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
             result.warnings.append(
                 f"backfilled {geometry_sub_tasks_added} sub_task(s) from --geometry-from "
                 "donor documents, for task_types the source had no coverage of at all"
+            )
+        if track_refs_tagged:
+            result.warnings.append(
+                f"added {track_refs_tagged} <track> reference(s) to text that named or "
+                "described a recovered track without tagging it"
             )
 
         return result
@@ -445,13 +467,16 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         result: ConversionResult,
         *,
         s3_prefix: Optional[str] = None,
-    ) -> Tuple[dict, int]:
+    ) -> Tuple[dict, int, int]:
         """Assemble one df-vlm-qa-v1.0 document for a single clip.
 
         Field order follows the schema's own ordering so a diff against a
-        donor batch stays readable. Returns ``(doc, backfilled_count)`` — the
-        count of donor ``sub_tasks`` copied in because their ``task_type``
-        had no source coverage at all, for the caller's batch-level summary.
+        donor batch stays readable. Returns ``(doc, backfilled_count,
+        tagged_count)`` for the caller's batch-level summary:
+        ``backfilled_count`` is donor ``sub_tasks`` copied in because their
+        ``task_type`` had no source coverage at all; ``tagged_count`` is
+        ``<track>`` references newly inserted into text that never
+        mentioned that track.
         """
         ordered = sorted(items, key=lambda i: i.sort_key)
 
@@ -492,7 +517,180 @@ class TaoVlReasonV1_0ToDfVlmQaV1_0Converter(BaseConverter):
         backfilled = [dict(s) for s in donor_subs if s.get("task_type") not in existing_types]
         doc["sub_tasks"] += backfilled
 
-        return doc, len(backfilled)
+        tagged = 0
+        track_ids = [t["track_id"] for t in doc.get("tracking", [])]
+        if track_ids:
+            matchers = self._build_track_matchers(track_ids, doc["sub_tasks"])
+            if matchers:
+                for sub_task in doc["sub_tasks"]:
+                    for field in ("question", "answer", "reasoning"):
+                        text = sub_task.get(field)
+                        if not text:
+                            continue
+                        new_text, found = self._tag_track_references(text, matchers)
+                        if new_text != text:
+                            sub_task[field] = new_text
+                            tagged += len(found)
+
+        return doc, len(backfilled), tagged
+
+    # ------------------------------------------------------------------
+    # <track> marker placement
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _track_descriptions(sub_tasks: List[dict]) -> Dict[str, str]:
+        """Read each track's appearance description off its own sub_task.
+
+        ``tracking[*]`` is geometry-only by design (see
+        ``df-vlm-qa-v1.0``'s own README), so a track's appearance can only
+        come from the ``tracking_description`` sub_task that already
+        references it via ``<track>``. Only unambiguous entries — exactly
+        one track referenced — are usable; the rest give no clean
+        description-to-track mapping.
+        """
+        descriptions: Dict[str, str] = {}
+        for sub_task in sub_tasks:
+            if sub_task.get("task_type") != "tracking_description":
+                continue
+            answer = sub_task.get("answer") or ""
+            ids = TRACK_REF.findall(answer)
+            if len(ids) != 1:
+                continue
+            plain = _TAGGED_SPAN_RE.sub("", answer)
+            plain = re.sub(r"\s{2,}", " ", plain).strip()
+            if plain:
+                descriptions[ids[0]] = plain
+        return descriptions
+
+    @staticmethod
+    def _description_variants(description: str) -> Set[str]:
+        """Comma-clause prefixes of *description*, longest first.
+
+        A caption ending in a positional aside ("…, near the entrance")
+        rarely appears verbatim in independently-written QA text, so every
+        leading clause-prefix is offered as its own candidate phrase — "a
+        man in a white T-shirt, black pants" also yields "a man in a white
+        T-shirt". Phrases under ``_MIN_DESCRIPTION_WORDS`` are too generic
+        to identify one specific track and are dropped.
+        """
+        clauses = [c.strip() for c in description.split(",") if c.strip()]
+        variants: Set[str] = set()
+        for count in range(len(clauses), 0, -1):
+            phrase = ", ".join(clauses[:count])
+            stripped = _LEADING_ARTICLE_RE.sub("", phrase)
+            if len(stripped.split()) < _MIN_DESCRIPTION_WORDS:
+                continue
+            variants.add(phrase)
+            variants.add(stripped)
+        return variants
+
+    @classmethod
+    def _build_track_matchers(
+        cls,
+        track_ids: List[str],
+        sub_tasks: List[dict],
+    ) -> List[Tuple["re.Pattern", str, bool]]:
+        """Build ``(pattern, track_id, is_literal)`` triples, longest phrase first.
+
+        Two markup sources, matching ``convert_to_df_vlm_qa_v1_0.py``: a
+        track's own literal id, and unambiguous prefixes of its description
+        (a phrase two different tracks' descriptions both start with cannot
+        identify either one, so those are dropped rather than guessed).
+        """
+        descriptions = cls._track_descriptions(sub_tasks)
+        raw: List[Tuple[str, str, bool]] = []
+        owners: Dict[str, Set[str]] = defaultdict(set)
+        per_track: Dict[str, Set[str]] = {}
+
+        for track_id in track_ids:
+            raw.append((track_id, track_id, True))
+            description = descriptions.get(track_id)
+            if not description:
+                continue
+            variants = cls._description_variants(description)
+            per_track[track_id] = variants
+            for phrase in variants:
+                owners[phrase.lower()].add(track_id)
+
+        for track_id, variants in per_track.items():
+            for phrase in variants:
+                if owners[phrase.lower()] == {track_id}:
+                    raw.append((phrase, track_id, False))
+
+        matchers: List[Tuple["re.Pattern", str, bool]] = []
+        seen: Set[str] = set()
+        for phrase, track_id, is_literal in sorted(raw, key=lambda r: (-len(r[0]), r[0], r[1])):
+            key = phrase.lower()
+            if not phrase.strip() or key in seen:
+                continue
+            seen.add(key)
+            if is_literal:
+                pattern = r"\b" + re.escape(phrase) + r"\b"
+            else:
+                body = r"\s+".join(re.escape(word) for word in phrase.split())
+                if _LEADING_ARTICLE_RE.match(phrase):
+                    pattern = r"\b" + body
+                else:
+                    pattern = r"\b(?:the|a|an)\s+" + body
+                pattern = f"(?:{pattern}|\\b{body})"
+            matchers.append((re.compile(pattern, re.IGNORECASE), track_id, is_literal))
+        return matchers
+
+    @staticmethod
+    def _tag_track_references(
+        text: str,
+        matchers: List[Tuple["re.Pattern", str, bool]],
+    ) -> Tuple[str, List[str]]:
+        """Wrap track references in ``<track>...</track>``; return ``(text, ids)``.
+
+        Idempotent: an already-tagged span is left untouched rather than
+        matched again, so re-running this over text that already carries
+        markers never doubles them up.
+        """
+        found: List[str] = []
+
+        def tag_span(span: str) -> str:
+            pos = 0
+            out = []
+            while pos < len(span):
+                best = None
+                for pattern, track_id, is_literal in matchers:
+                    match = pattern.search(span, pos)
+                    if match and (
+                        best is None or
+                        match.start() < best[0].start() or
+                        (match.start() == best[0].start() and match.end() > best[0].end())
+                    ):
+                        best = (match, track_id, is_literal)
+                if best is None:
+                    out.append(span[pos:])
+                    break
+                match, track_id, is_literal = best
+                out.append(span[pos:match.start()])
+                if is_literal:
+                    out.append(f"<track>{track_id}</track>")
+                else:
+                    out.append(f"{match.group(0)} <track>{track_id}</track>")
+                found.append(track_id)
+                pos = match.end()
+            return "".join(out)
+
+        parts = []
+        last = 0
+        for tagged in _TAGGED_SPAN_RE.finditer(text):
+            parts.append(tag_span(text[last:tagged.start()]))
+            parts.append(tagged.group(0))
+            last = tagged.end()
+        parts.append(tag_span(text[last:]))
+
+        # A description phrase immediately preceding its own pre-existing literal
+        # tag would otherwise end up double-tagged; collapse adjacent repeats.
+        out = re.sub(
+            r"(<track>([^<>\s]+)</track>)(?:\s*<track>\2</track>)+",
+            r"\1",
+            "".join(parts),
+        )
+        return out, found
 
     @staticmethod
     def _build_sub_task(wrapped: _Item) -> dict:

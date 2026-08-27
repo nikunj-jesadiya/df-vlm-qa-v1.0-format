@@ -324,6 +324,107 @@ class TestGeometryBackfill:
         assert len(_doc(out, "a")["sub_tasks"]) == 1
 
 
+class TestTrackTagging:
+    """--geometry-from also tags VRA text that named a recovered track."""
+
+    def _donor_with_description(self, tmp_path: Path, description: str) -> Path:
+        donor = tmp_path / "donor"
+        donor.mkdir()
+        doc = {
+            "format": "df-vlm-qa-v1.0",
+            "metadata": {"type": "annotation", "license": "CC-BY-4.0"},
+            "video_id": "clips/a.mp4",
+            "tracking_meta": {
+                "time_unit": "frame_index", "box_order": "t_x1_y1_x2_y2",
+                "coordinate_space": "pixel", "width": 100, "height": 100,
+                "source_fps": 30.0, "frame_count": 300, "sample_fps": 7.5,
+            },
+            "tracking": [{"track_id": "person_T001", "track": [[0, 1, 1, 2, 2]]}],
+            "sub_tasks": [
+                {
+                    "task_type": "tracking_description",
+                    "question": "Describe the tracking <track>person_T001</track>.",
+                    "answer": f"{description} <track>person_T001</track>",
+                },
+            ],
+        }
+        with open(donor / "a.json", "w") as f:
+            json.dump(doc, f)
+        return donor
+
+    def test_literal_track_id_gets_tagged(self, tmp_path):
+        """A VRA sentence that names the id literally gets it wrapped."""
+        donor = self._donor_with_description(
+            tmp_path, "a man in a white T-shirt, black pants"
+        )
+        files = {
+            "f": _annotation(
+                "bcq", [_item(q="Is person_T001 wearing a hat?", index="a:0")]
+            )
+        }
+        result, out = _convert(tmp_path, files, geometry_from=donor)
+        bcq = next(s for s in _doc(out, "a")["sub_tasks"] if s["task_type"] == "bcq")
+        assert bcq["question"] == "Is <track>person_T001</track> wearing a hat?"
+        assert any("added 1 <track> reference" in w for w in result.warnings)
+
+    def test_description_phrase_gets_tagged(self, tmp_path):
+        """A VRA sentence matching the track's description, not its id, still gets tagged."""
+        donor = self._donor_with_description(
+            tmp_path, "a man in a white T-shirt, black pants"
+        )
+        files = {
+            "f": _annotation(
+                "bcq",
+                [_item(q="Does a man in a white T-shirt carry a bag?", index="a:0")],
+            )
+        }
+        _, out = _convert(tmp_path, files, geometry_from=donor)
+        bcq = next(s for s in _doc(out, "a")["sub_tasks"] if s["task_type"] == "bcq")
+        assert "<track>person_T001</track>" in bcq["question"]
+
+    def test_already_tagged_text_is_not_retagged(self, tmp_path):
+        """A marker already in the source text is left exactly as-is."""
+        donor = self._donor_with_description(
+            tmp_path, "a man in a white T-shirt, black pants"
+        )
+        files = {
+            "f": _annotation(
+                "bcq",
+                [_item(q="Is <track>person_T001</track> wearing a hat?", index="a:0")],
+            )
+        }
+        result, out = _convert(tmp_path, files, geometry_from=donor)
+        bcq = next(s for s in _doc(out, "a")["sub_tasks"] if s["task_type"] == "bcq")
+        assert bcq["question"] == "Is <track>person_T001</track> wearing a hat?"
+        assert not any("added" in w and "<track>" in w for w in result.warnings)
+
+    def test_no_double_tag_when_phrase_precedes_existing_tag(self, tmp_path):
+        """A description match right before an existing literal tag doesn't duplicate it."""
+        donor = self._donor_with_description(
+            tmp_path, "a man in a white T-shirt, black pants"
+        )
+        files = {
+            "f": _annotation(
+                "bcq",
+                [
+                    _item(
+                        q="a man in a white T-shirt <track>person_T001</track> waves.",
+                        index="a:0",
+                    )
+                ],
+            )
+        }
+        _, out = _convert(tmp_path, files, geometry_from=donor)
+        bcq = next(s for s in _doc(out, "a")["sub_tasks"] if s["task_type"] == "bcq")
+        assert bcq["question"].count("<track>person_T001</track>") == 1
+
+    def test_no_geometry_from_means_no_tagging(self, tmp_path):
+        """Without recovered tracking, text mentioning a track id is left alone."""
+        files = {"f": _annotation("bcq", [_item(q="Is person_T001 there?", index="a:0")])}
+        _, out = _convert(tmp_path, files)
+        assert _doc(out, "a")["sub_tasks"][0]["question"] == "Is person_T001 there?"
+
+
 class TestPlaceVideos:
     """Documents always live under jsons/; --place-videos adds videos/ too."""
 
