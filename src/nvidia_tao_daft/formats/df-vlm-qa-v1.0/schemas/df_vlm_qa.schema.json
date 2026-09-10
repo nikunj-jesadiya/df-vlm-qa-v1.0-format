@@ -125,7 +125,7 @@
         "properties": {
           "task_type": {
             "type": "string",
-            "description": "Task family. Free-form by design, but the documented set is 'bcq', 'bcq_openended', 'mcq', 'mcq_openended', 'open_qa', 'causal_linkage', 'scene_description', 'temporal_description', 'temporal_localization', 'video_summarization', 'tracking_description', 'grounded_spatial_temporal_description', 'event_verification', 'gun_verification', and 'safety_verification'. A value outside that set is reported by the validator as a warning, not an error: a typo silently creates a new partition file downstream."
+            "description": "Task family. Free-form and evolves independently of this format; not checked by the validator against any fixed set. Values observed in production include 'bcq', 'bcq_openended', 'mcq', 'mcq_openended', 'open_qa', 'causal_linkage', 'scene_description', 'temporal_description', 'temporal_localization', 'video_summarization', 'tracking_description', 'grounded_spatial_temporal_description', 'event_verification', 'gun_verification', and 'safety_verification'."
           },
           "question": {"type": "string", "description": "Free-form prompt. May contain <track>{track_id}</track> markers."},
           "answer": {"type": "string", "description": "Free-form expected answer. May contain <track>{track_id}</track> markers."},

@@ -98,7 +98,7 @@ Deleting a track means removing its object from the array, not emptying its
 
 | Field | Type | Required | Notes |
 |---|---|:---:|---|
-| `task_type` | string | ✓ | Task family. Free-form, but see the documented set below. |
+| `task_type` | string | ✓ | Task family. Free-form; see the observed set below for reference. |
 | `question` | string | ✓ | Free-form prompt. May contain `<track>` markers and timestamps. |
 | `answer` | string | ✓ | Free-form expected answer. May contain `<track>` markers and timestamps. |
 | `reasoning` | string | ✗ | Optional rationale. May contain `<track>` markers and timestamps. |
@@ -110,10 +110,11 @@ that needs to travel should arrive as named optional fields in a `v1.1`.
 
 ### `task_type` values
 
-The schema does not enumerate `task_type` — it is free-form by design. The
-validator warns on values outside the documented set, because a typo silently
-creates a new partition file downstream (`open_q.json` alongside
-`open_qa.json`).
+The schema does not enumerate `task_type`, and the validator does not check it
+against a fixed set — it is free-form and evolves at its own pace,
+independent of this format. The table below is a reference snapshot of the
+values observed in production, not an enforced vocabulary; a typo (e.g.
+`open_q` instead of `open_qa`) is not currently caught by the validator.
 
 | Value | Meaning |
 |---|---|
@@ -149,9 +150,7 @@ production sub-tasks each family member used exactly one question:
 | `gun_verification` | *Is there a gun detected in the video?* |
 | `safety_verification` | *Is there a physical safety event in this video?* |
 
-The family is open — a new detector domain adds a new member. New members
-belong in this list rather than being matched by a `*_verification` pattern,
-so that a misspelling like `gun_verifcation` is still reported.
+The family is open — a new detector domain adds a new member.
 
 `grounded_spatial_temporal_description` has no definition upstream — the
 issue introducing this format names it in the documented list but never says
@@ -272,8 +271,9 @@ asking a human to correct it.
 
 - **A `version` field.** This format uses `format: "df-vlm-qa-v1.0"` as the
   single identity marker (the version is part of the format string).
-- **An enumeration on `task_type`.** Free-form by design; the documented set
-  above is enforced as a validator warning, not a schema constraint.
+- **An enumeration on `task_type`, and no validator check for one.**
+  Free-form by design and evolves independently of this format; the table
+  above is reference documentation only, not an enforced vocabulary.
 - **A per-sub-task list of referenced track ids.** The `<track>` markers in
   the text are the source of truth; a parallel list would drift.
 - **Labels or descriptions on `tracking[*]`.** Appearance lives in the

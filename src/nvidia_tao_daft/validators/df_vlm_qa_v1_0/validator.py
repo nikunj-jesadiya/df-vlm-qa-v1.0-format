@@ -19,7 +19,6 @@ from typing import Any, ClassVar, List, Optional, Set, Tuple
 from nvidia_tao_daft.utils.df_vlm_qa_v1_0 import (
     DURATION_TOLERANCE_S,
     FORMAT,
-    TASK_TYPES,
     TIMESTAMP_CANONICAL,
     TIMESTAMP_COLON,
     TIMESTAMP_LIKE,
@@ -486,7 +485,7 @@ class DfVlmQaV1_0Validator(BaseValidator):
     # Sub-task text conventions
     # ------------------------------------------------------------------
     def _validate_text(self, doc_path: Path, doc: dict, result: ValidationResult) -> int:
-        """Check timestamps, ``<SKIP>`` placement, and ``task_type``.
+        """Check timestamps and ``<SKIP>`` placement.
 
         Returns the number of ``<SKIP>``ped sub-tasks in this document, which
         the caller accumulates for the run summary.
@@ -494,12 +493,6 @@ class DfVlmQaV1_0Validator(BaseValidator):
         name = doc_path.name
         skipped = 0
         for index, sub_task in enumerate(doc["sub_tasks"]):
-            task_type = sub_task.get("task_type")
-            if task_type not in TASK_TYPES:
-                result.add_warning(
-                    f"{name}: sub_tasks[{index}] has task_type {task_type!r}, which is "
-                    "outside the documented set"
-                )
             if is_skipped(sub_task):
                 skipped += 1
             for field in _TEXT_FIELDS:

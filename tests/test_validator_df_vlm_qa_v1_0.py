@@ -356,7 +356,7 @@ class TestTrackReferences:
 
 
 class TestTextConventions:
-    """Timestamps, <SKIP>, and task_type."""
+    """Timestamps and <SKIP>."""
 
     def test_non_canonical_timestamp_is_warning(self, tmp_path):
         """Four decimal places is outside the canonical form."""
@@ -413,43 +413,6 @@ class TestTextConventions:
             {"task_type": "open_qa", "question": "<skip>q", "answer": "a"}
         )
         assert _validate(_batch(tmp_path, doc)).skipped_sub_tasks == 1
-
-    def test_unknown_task_type_is_warning(self, tmp_path):
-        """Free-form by design, but a typo is worth flagging."""
-        doc = _doc()
-        doc["sub_tasks"][0]["task_type"] = "open_q"
-        result = _validate(_batch(tmp_path, doc))
-        assert _has(result.warnings, "outside the documented set")
-
-    @pytest.mark.parametrize(
-        "task_type",
-        ["event_verification", "gun_verification", "safety_verification"],
-    )
-    def test_verification_family_is_documented(self, tmp_path, task_type):
-        """The `<domain>_verification` family is in the documented set.
-
-        `event_verification` alone accounts for 9,585 sub-tasks across the
-        production batches; `gun_verification` and `safety_verification` 593
-        each. All three are a fixed yes/no question about one condition.
-        """
-        doc = _doc()
-        doc["sub_tasks"].append(
-            {
-                "task_type": task_type,
-                "question": "Do you see any suspicious or dangerous activity?",
-                "answer": "No. Routine activity only.",
-                "reasoning": "Nothing in the clip departs from normal behaviour.",
-            }
-        )
-        result = _validate(_batch(tmp_path, doc))
-        assert not _has(result.warnings, "outside the documented set")
-
-    def test_verification_typo_still_caught(self, tmp_path):
-        """Enumerating the family rather than pattern-matching is the point."""
-        doc = _doc()
-        doc["sub_tasks"][0]["task_type"] = "gun_verifcation"
-        result = _validate(_batch(tmp_path, doc))
-        assert _has(result.warnings, "outside the documented set")
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +558,7 @@ class TestRun:
     def test_strict_promotes_warnings(self, tmp_path):
         """Under --strict a warning is enough to fail the run."""
         doc = _doc()
-        doc["sub_tasks"][0]["task_type"] = "open_q"
+        doc["sub_tasks"][0]["answer"] = "it stops at 01:23"
         batch = _batch(tmp_path, doc)
         assert DfVlmQaV1_0Validator(argparse.Namespace(path=batch, strict=False)).run() == 0
         assert DfVlmQaV1_0Validator(argparse.Namespace(path=batch, strict=True)).run() == 1

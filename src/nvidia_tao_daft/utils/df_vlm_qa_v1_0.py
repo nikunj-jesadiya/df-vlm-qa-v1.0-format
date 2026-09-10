@@ -23,32 +23,6 @@ FORMAT = "df-vlm-qa-v1.0"
 #: ``metadata.type`` discriminator carried by every annotation document.
 METADATA_TYPE = "annotation"
 
-#: Documented ``task_type`` values. Free-form by design — the validator warns
-#: on anything outside this set rather than rejecting it.
-TASK_TYPES = frozenset(
-    {
-        "bcq",
-        "bcq_openended",
-        "mcq",
-        "mcq_openended",
-        "open_qa",
-        "causal_linkage",
-        "scene_description",
-        "temporal_description",
-        "temporal_localization",
-        "video_summarization",
-        "tracking_description",
-        "grounded_spatial_temporal_description",
-        # The `<domain>_verification` family: a fixed yes/no question asking
-        # whether one condition holds in the clip. Open-ended by nature — a new
-        # detector domain adds a new member, which belongs here so a typo is
-        # still caught.
-        "event_verification",
-        "gun_verification",
-        "safety_verification",
-    }
-)
-
 #: ``<track>{track_id}</track>`` — the single source of truth for which tracks
 #: a sub-task references.
 TRACK_REF = re.compile(r"<track>(.*?)</track>", re.DOTALL)
